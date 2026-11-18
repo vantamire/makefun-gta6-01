@@ -1,20 +1,17 @@
-// A tiny static server for game/ (Node 22, standard library only), so an entry can be played
-// locally without a build step: `node serve.ts` serves game/ on http://localhost:8080.
-// It sends the MIME types a browser game needs, refuses any path outside game/, and otherwise
-// does nothing clever: this is a development convenience, not a web server for the internet.
-// v4: the same server, written out again for the v4 entry — the game it serves now has the
-// boardwalk district, the pistol, the day/night cycle and the helicopter, but the server
+// A tiny static server for game/ (Node 22, standard library only), so the
+// entry can be played locally without a build step: `node serve.ts` serves
+// game/ on http://localhost:8080. It sends the MIME types a browser game
+// needs, refuses any path outside game/, and otherwise does nothing clever:
+// this is a development convenience, not a web server for the internet.
+// v7: written out again for the v7 entry — the game it serves now has four
+// districts, twelve missions, a helicopter and a radio, but the server
 // itself does not care what the game contains.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const ROOT = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -40,6 +37,40 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+function pickPort() {
+  const args = process.argv.slice(2);
+  const at = args.indexOf('--port');
+  const wanted = at === -1 ? 8080 : Number(args[at + 1]);
+  return Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+}
+
+// Resolve a request path to a file under ROOT, or null when it escapes.
+function resolvePath(pathname) {
+  if (pathname.endsWith('/')) pathname += 'index.html';
+  const file = resolve(join(ROOT, normalize(pathname)));
+  if (file !== ROOT && !file.startsWith(ROOT + sep)) return null;
+  return file;
+}
+
+function sendFile(response, file) {
+  let size;
+  try {
+    const stats = statSync(file);
+    if (!stats.isFile()) return false;
+    size = stats.size;
+  } catch {
+    return false;
+  }
+  response.writeHead(200, {
+    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': size,
+    'cache-control': 'no-store',
+  });
+  createReadStream(file).pipe(response);
+  return true;
+}
+
+const port = pickPort();
 createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost');
   // A tiny health endpoint so a play-test script can tell the server
@@ -48,34 +79,21 @@ createServer((request, response) => {
     response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end('ok');
     return;
   }
-  let pathname: string;
+  let pathname;
   try {
     pathname = decodeURIComponent(url.pathname);
   } catch {
     response.writeHead(400).end('bad request');
     return;
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(root, normalize(pathname)));
-  if (file !== root && !file.startsWith(root + sep)) {
+  const file = resolvePath(pathname);
+  if (!file) {
     response.writeHead(403).end('forbidden');
     return;
   }
-  let size: number;
-  try {
-    const stats = statSync(file);
-    if (!stats.isFile()) throw new Error('not a file');
-    size = stats.size;
-  } catch {
+  if (!sendFile(response, file)) {
     response.writeHead(404).end('not found');
-    return;
   }
-  response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-    'content-length': size,
-    'cache-control': 'no-store',
-  });
-  createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
   console.log(`game/ is on http://localhost:${port}`);
 });

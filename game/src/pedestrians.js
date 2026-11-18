@@ -1,424 +1,381 @@
-// v4 — pedestrians.js
-// Sidewalk life: low-poly people who stroll the block sidewalks on seeded
-// waypoints, pause to look around, cross at the crosswalks, and sprint
-// away from the road when a fast car — the player's or a police cruiser's
-// — bears down on them. A shove (the player's F punch, or the new pistol)
-// knocks one down for a couple of seconds, after which they scramble up
-// and flee. New in v4: a share of the crowd strolls the BOARDWALK instead
-// of the city streets — ambling along the planks, pausing at the food
-// stalls — so the harbour district feels lived-in too.
-//
-// Cheap by design: one shared geometry per body part for the whole crowd,
-// a small cached set of materials, and per-person variety from scale,
-// shirt, skin, trousers, hats and the odd shoulder bag. Each person is a
-// Walker object with its own tiny state machine (walk / pause / flee /
-// down) driven by one step() method.
+// VICE HARBOR v6 — the pedestrians.
+// Low-poly people who stroll the sidewalks on seeded waypoints, pause to
+// look around, cross at the crosswalks, and sprint away from a fast car —
+// the player's or a police cruiser's. A shove (the player's F punch)
+// knocks one down for ~2 s, after which they scramble up and flee. Three
+// stray dogs trot the streets, sniff, and bolt from traffic. Cheap by
+// design: shared geometries and a small cached set of materials for the
+// whole crowd, with variety from scale, shirt, skin, trousers, hats and
+// the odd shoulder bag. One in six people strolls the boardwalk instead
+// of the city, and a few work the industrial yards, the south houses and
+// the casino strip.
 
-import * as THREE from 'three';
-import { CONFIG } from './config.js';
-import { createRNG } from './random.js';
+import { CFG } from './settings.js';
+import { Rng, steerToward } from './rng.js';
 
-// City grid (shared with the world builder): 8x8 blocks of 40, roads 12
-// wide, road centres every 52. Sidewalks sit just off the road edge.
-const BLOCK = 40;
-const ROAD = 12;
-const BLOCKS = 8;
-const PITCH = BLOCK + ROAD; // 52
-const HALF = (BLOCKS * BLOCK + (BLOCKS + 1) * ROAD) / 2; // 214
-const SIDEWALK = ROAD / 2 + 1.6; // distance from a road centre line
-const BOARDWALK_X = 221; // centre of the boardwalk deck (see world.js)
-
-function roadCentres() {
-  const centres = [];
-  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF + k * PITCH);
-  return centres;
-}
-
-const SHIRT_COLORS = [
-  0xd23c2e, 0x2e6fd2, 0xe8b93a, 0x3fae6a, 0x7a4fd0,
-  0xe8e6df, 0x18a7a0, 0xd2691e, 0xff5a8a, 0x9be62e,
-  0xff8c1a, 0x2ee6c8, 0xff3c5a, 0x7ac2ff, 0xc94f7c,
+const SHIRTS = [
+  0xd23c2e, 0x2e6fd2, 0xe8b93a, 0x3fae6a, 0x7a4fd0, 0xe8e6df, 0x18a7a0,
+  0xd2691e, 0xff5a8a, 0x9be62e, 0xff8c1a, 0x2ee6c8, 0xff3c5a, 0x7ac2ff, 0xc94f7c,
 ];
-const SKIN_COLORS = [0xc68e5f, 0x8a5a3b, 0xe8b88a, 0x6e4530, 0xd9a066, 0xa06a42];
-const PANTS_COLORS = [0x2a2f38, 0x3a3f4a, 0x5a4632, 0x2e4a3a, 0x6b6b7a, 0x1e2a3a];
-const HAIR_COLORS = [0x201510, 0x3a2a1a, 0x6b6b6b, 0x111111, 0x8a5a2a];
+const SKINS = [0xc68e5f, 0x8a5a3b, 0xe8b88a, 0x6e4530, 0xd9a066, 0xa06a42];
+const TROUSERS = [0x2a2f38, 0x3a3f4a, 0x5a4632, 0x2e4a3a, 0x6b6b7a, 0x1e2a3a];
+const HAIRS = [0x201510, 0x3a2a1a, 0x6b6b6b, 0x111111, 0x8a5a2a];
 
-// One shared geometry per body part, plus a material cache keyed by
-// colour, so a crowd of sixty costs little more than a crowd of six.
-let _art = null;
-const _matCache = new Map();
-function art(T) {
-  if (!_art) {
-    _art = {
-      bodyGeo: new T.BoxGeometry(0.52, 0.72, 0.3),
-      headGeo: new T.SphereGeometry(0.21, 10, 8),
-      legsGeo: new T.BoxGeometry(0.44, 0.62, 0.26),
-      armGeo: new T.BoxGeometry(0.11, 0.6, 0.11),
-      capGeo: new T.CylinderGeometry(0.22, 0.23, 0.09, 10),
-      bagGeo: new T.BoxGeometry(0.22, 0.3, 0.12),
+let sharedParts = null;
+const shirtCache = new Map();
+const skinCache = new Map();
+const pantsCache = new Map();
+
+function sharedArt(T) {
+  if (!sharedParts) {
+    sharedParts = {
+      legs: new T.BoxGeometry(0.44, 0.62, 0.26),
+      body: new T.BoxGeometry(0.52, 0.72, 0.3),
+      head: new T.SphereGeometry(0.21, 10, 8),
+      arm: new T.BoxGeometry(0.11, 0.6, 0.11),
+      cap: new T.CylinderGeometry(0.22, 0.23, 0.09, 10),
+      bag: new T.BoxGeometry(0.22, 0.3, 0.12),
     };
   }
-  return _art;
-}
-function cachedMat(T, color, roughness) {
-  const key = `${color}|${roughness ?? 0.85}`;
-  if (!_matCache.has(key)) {
-    _matCache.set(key, new T.MeshStandardMaterial({ color, roughness: roughness ?? 0.85, metalness: 0 }));
-  }
-  return _matCache.get(key);
+  return sharedParts;
 }
 
-// Build one person's figure: legs, torso, head with a hair cap, arms,
-// and a hat or a bag on a share of the crowd. People are not all the
-// same height — the scale spreads, so the crowd reads as individuals.
-function buildFigure(T, rng) {
-  const a = art(T);
-  const shirt = SHIRT_COLORS[rng.int(0, SHIRT_COLORS.length - 1)];
-  const skin = SKIN_COLORS[rng.int(0, SKIN_COLORS.length - 1)];
-  const pants = PANTS_COLORS[rng.int(0, PANTS_COLORS.length - 1)];
-  const hairColor = HAIR_COLORS[rng.int(0, HAIR_COLORS.length - 1)];
-  const group = new T.Group();
-  group.name = 'pedestrian';
-  const part = (geo, mat, x, y, z) => {
-    const m = new T.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    group.add(m);
-    return m;
-  };
-  part(a.legsGeo, cachedMat(T, pants, 0.9), 0, 0.31, 0);
-  part(a.bodyGeo, cachedMat(T, shirt), 0, 0.98, 0);
-  part(a.headGeo, cachedMat(T, skin, 0.7), 0, 1.52, 0);
+function cachedMaterial(T, cache, color, rough) {
+  if (!cache.has(color)) {
+    cache.set(color, new T.MeshStandardMaterial({ color, roughness: rough ?? 0.85 }));
+  }
+  return cache.get(color);
+}
+
+function buildWalkerMesh(T, rng) {
+  const art = sharedArt(T);
+  const shirt = rng.pick(SHIRTS);
+  const skin = rng.pick(SKINS);
+  const pants = rng.pick(TROUSERS);
+  const hairCol = rng.pick(HAIRS);
+  const g = new T.Group();
+  g.name = 'walker';
+  const pieces = [
+    [art.legs, cachedMaterial(T, pantsCache, pants, 0.9), 0, 0.31, 0],
+    [art.body, cachedMaterial(T, shirtCache, shirt), 0, 0.98, 0],
+    [art.head, cachedMaterial(T, skinCache, skin, 0.7), 0, 1.52, 0],
+  ];
+  for (const [geo, m, x, y, z] of pieces) {
+    const mesh = new T.Mesh(geo, m);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    g.add(mesh);
+  }
   // Hair cap so heads are not bare spheres.
   const hair = new T.Mesh(
     new T.SphereGeometry(0.21, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
-    new T.MeshStandardMaterial({ color: hairColor, roughness: 0.95 })
+    new T.MeshStandardMaterial({ color: hairCol, roughness: 0.95 }),
   );
   hair.position.y = 1.56;
-  group.add(hair);
-  const armL = part(a.armGeo, cachedMat(T, shirt), -0.33, 0.98, 0);
-  const armR = part(a.armGeo, cachedMat(T, shirt), 0.33, 0.98, 0);
-  // Hats: a cap (with a brim) or a beanie on about a third of the crowd.
-  const hatRoll = rng.range(0, 1);
+  g.add(hair);
+  const armL = new T.Mesh(art.arm, cachedMaterial(T, shirtCache, shirt));
+  armL.position.set(-0.33, 0.98, 0);
+  const armR = new T.Mesh(art.arm, cachedMaterial(T, shirtCache, shirt));
+  armR.position.set(0.33, 0.98, 0);
+  g.add(armL, armR);
+  // Hats: a cap with a brim, or a beanie, on about a third of the crowd.
+  const hatRoll = rng.next();
   if (hatRoll < 0.2) {
-    const capMat = new T.MeshStandardMaterial({ color: rng.chance(0.5) ? 0xd23c2e : 0x2e6fd2, roughness: 0.9 });
-    part(a.capGeo, capMat, 0, 1.68, 0);
-    const brim = new T.Mesh(new T.BoxGeometry(0.24, 0.03, 0.16), capMat);
+    const cap = new T.Mesh(art.cap, new T.MeshStandardMaterial({
+      color: rng.chance(0.5) ? 0xd23c2e : 0x2e6fd2, roughness: 0.9,
+    }));
+    cap.position.y = 1.68;
+    g.add(cap);
+    const brim = new T.Mesh(new T.BoxGeometry(0.24, 0.03, 0.16), cap.material);
     brim.position.set(0, 1.65, 0.24);
-    group.add(brim);
+    g.add(brim);
   } else if (hatRoll < 0.35) {
     const beanie = new T.Mesh(
       new T.SphereGeometry(0.22, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5),
-      new T.MeshStandardMaterial({ color: rng.chance(0.5) ? 0x3fae6a : 0x7a4fd0, roughness: 0.95 })
+      new T.MeshStandardMaterial({ color: rng.chance(0.5) ? 0x3fae6a : 0x7a4fd0, roughness: 0.95 }),
     );
     beanie.position.y = 1.56;
-    group.add(beanie);
+    g.add(beanie);
   }
   // A shoulder bag on about one in five.
-  if (rng.chance(0.2)) {
-    part(a.bagGeo, new T.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.9 }), 0.32, 0.85, 0);
+  if (rng.next() < 0.2) {
+    const bag = new T.Mesh(art.bag, new T.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.9 }));
+    bag.position.set(0.32, 0.85, 0);
+    g.add(bag);
   }
-  group.scale.setScalar(0.95 + rng.range(0, 0.2));
-  group.userData.arms = [armL, armR];
-  return group;
+  g.scale.setScalar(0.95 + rng.next() * 0.2);
+  g.userData.arms = [armL, armR];
+  return g;
 }
 
-// Pick a random point on a block's sidewalk rectangle (inset SIDEWALK from
-// the surrounding road centre lines, i.e. just off the road edge).
-function sidewalkPoint(rng, xs, zs) {
-  const i = rng.int(0, xs.length - 2);
-  const j = rng.int(0, zs.length - 2);
-  const x0 = xs[i] + SIDEWALK;
-  const x1 = xs[i + 1] - SIDEWALK;
-  const z0 = zs[j] + SIDEWALK;
-  const z1 = zs[j + 1] - SIDEWALK;
-  const edge = rng.int(0, 3);
-  const t = rng.range(0, 1);
-  if (edge === 0) return { x: x0 + (x1 - x0) * t, z: z0 };
-  if (edge === 1) return { x: x0 + (x1 - x0) * t, z: z1 };
-  if (edge === 2) return { x: x0, z: z0 + (z1 - z0) * t };
-  return { x: x1, z: z0 + (z1 - z0) * t };
-}
-
-// A point on the sidewalk directly across one road from `from`: the
-// person crosses at a road line (where the crosswalks are) instead of
-// cutting diagonally across a block.
-function crosswalkPoint(rng, xs, zs, from) {
-  if (rng.chance(0.5)) {
-    const c = xs[rng.int(0, xs.length - 1)];
-    const along = -HALF + 20 + rng.range(0, HALF * 2 - 40);
-    const side = from.x < c ? 1 : -1;
-    return { x: c + side * SIDEWALK, z: along };
-  }
-  const c = zs[rng.int(0, zs.length - 1)];
-  const along = -HALF + 20 + rng.range(0, HALF * 2 - 40);
-  const side = from.z < c ? 1 : -1;
-  return { x: along, z: c + side * SIDEWALK };
-}
-
-// A point on the boardwalk deck, for the harbour strollers.
-function boardwalkPoint(rng) {
-  return {
-    x: BOARDWALK_X + rng.range(-3, 3),
-    z: rng.range(-HALF + 20, HALF - 20),
-  };
-}
-
-// The next waypoint for a person: a boardwalk stroller stays on the
-// boardwalk; a city walker usually picks another block's sidewalk and
-// sometimes crosses to the far side of the road they stand by.
-function pickWaypoint(rng, xs, zs, from, district) {
-  if (district === 'boardwalk') return boardwalkPoint(rng);
-  if (rng.chance(CONFIG.PED_CROSSWALK_CHANCE)) return crosswalkPoint(rng, xs, zs, from);
-  return sidewalkPoint(rng, xs, zs);
-}
-
-// Turn `heading` toward `target` at most `rate` radians per second.
-function turnToward(heading, target, rate, dt) {
-  let diff = target - heading;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  return heading + Math.max(-rate * dt, Math.min(rate * dt, diff));
-}
-
-// One person: a tiny state machine (walk / pause / flee / down) with a
-// mesh, a position alias, and the timers the main loop and the shots
-// staging poke at.
+// One pedestrian: a state machine (stroll | wait | run | down) walking
+// between sidewalk waypoints.
 class Walker {
-  constructor(T, rng, xs, zs, district) {
-    this.district = district;
-    const start = district === 'boardwalk'
-      ? boardwalkPoint(rng)
-      : sidewalkPoint(rng, xs, zs);
-    this.mesh = buildFigure(T, rng);
+  constructor(T, rng, xs, zs, area) {
+    this.rng = rng;
+    this.xs = xs;
+    this.zs = zs;
+    this.area = area; // 'city' | 'boardwalk' | 'yard' | 'house' | 'casino'
+    this.mesh = buildWalkerMesh(T, rng);
+    const start = this._spot(rng);
     this.mesh.position.set(start.x, 0, start.z);
-    this.pos = this.mesh.position; // alias, like Vehicle.pos
-    this.heading = rng.range(0, Math.PI * 2);
-    this.walkSpeed = 1.0 + rng.range(0, 1.0);
+    this.pos = this.mesh.position;
+    this.heading = rng.next() * Math.PI * 2;
+    this.walkSpeed = 1.0 + rng.next() * 1.0;
+    // Joggers: about one in eight walks at a run, for a livelier street.
+    this.jogger = rng.next() < 0.12;
+    if (this.jogger) this.walkSpeed = 2.6 + rng.next() * 0.8;
+    // Phone zombies: about one in six stops to stare at a phone.
+    this.phone = rng.next() < 0.16;
+    if (this.phone) {
+      const phone = new T.Mesh(
+        new T.BoxGeometry(0.09, 0.17, 0.02),
+        new T.MeshStandardMaterial({ color: 0x111111, roughness: 0.4 }),
+      );
+      phone.position.set(0.3, 1.18, 0.2);
+      this.mesh.add(phone);
+    }
     this.speed = 0;
-    this.state = 'walk';
-    this.waypoint = pickWaypoint(rng, xs, zs, this.pos, district);
-    this.pauseTimer = rng.range(0, 2);
-    this.fleeTimer = 0;
-    this.downTimer = 0;
+    this.state = 'stroll';
+    this.target = this._spot(rng);
+    this.waitT = rng.next() * 2;
+    this.runT = 0;
+    this.downT = 0;
+    this.phase = rng.next() * Math.PI * 2;
     this.fleeX = 1;
     this.fleeZ = 0;
     this.fleeAfterDown = false;
-    this.phase = rng.range(0, Math.PI * 2);
     this.mesh.rotation.y = this.heading;
   }
 
-  step(dt, ctx) {
-    const { rng, xs, zs, bounds } = ctx;
-    switch (this.state) {
-      case 'down': {
-        this.downTimer -= dt;
-        if (this.downTimer > 0) return;
-        this.mesh.rotation.z = 0;
-        this.mesh.rotation.y = this.heading;
-        if (this.fleeAfterDown) {
-          this.fleeAfterDown = false;
-          this.state = 'flee';
-          this.fleeTimer = 2.2;
-          this.heading = Math.atan2(this.fleeX, this.fleeZ);
-        } else {
-          this.state = 'walk';
-          this.walkSpeed = Math.max(0.8, this.walkSpeed * 0.85);
-          this.waypoint = pickWaypoint(rng, xs, zs, this.pos, this.district);
-        }
-        return;
+  _spot(rng) {
+    const { xs, zs } = this;
+    if (this.area === 'boardwalk') {
+      return { x: 222 + 2 + (rng.next() - 0.5) * 6, z: -180 + rng.next() * 360 };
+    }
+    if (this.area === 'yard') {
+      return { x: -180 + rng.next() * 360, z: -210 + rng.next() * 36 };
+    }
+    if (this.area === 'house') {
+      return { x: -180 + rng.next() * 360, z: 150 + rng.next() * 60 };
+    }
+    if (this.area === 'casino') {
+      return { x: -60 + rng.next() * 120, z: -210 + rng.next() * 24 };
+    }
+    const i = Math.floor(rng.next() * (xs.length - 1));
+    const j = Math.floor(rng.next() * (zs.length - 1));
+    const edge = Math.floor(rng.next() * 4);
+    const t = rng.next();
+    const x0 = xs[i] + 7.6;
+    const x1 = xs[i + 1] - 7.6;
+    const z0 = zs[j] + 7.6;
+    const z1 = zs[j + 1] - 7.6;
+    if (edge === 0) return { x: x0 + (x1 - x0) * t, z: z0 };
+    if (edge === 1) return { x: x0 + (x1 - x0) * t, z: z1 };
+    if (edge === 2) return { x: x0, z: z0 + (z1 - z0) * t };
+    return { x: x1, z: z0 + (z1 - z0) * t };
+  }
+
+  _nextTarget() {
+    if (this.rng.next() < CFG.CROSS_CHANCE) {
+      // Cross at a road line to the far sidewalk.
+      const alongRoad = this.rng.next() < 0.5;
+      const HALF = 222;
+      if (alongRoad) {
+        const c = this.xs[Math.floor(this.rng.next() * this.xs.length)];
+        const along = -HALF + 20 + this.rng.next() * (HALF * 2 - 40);
+        const side = this.pos.x < c ? 1 : -1;
+        return { x: c + side * 7.6, z: along };
       }
-      case 'flee': {
-        this.fleeTimer -= dt;
-        const runSpeed = 4.2;
-        this.speed = runSpeed;
-        this.pos.x += this.fleeX * runSpeed * dt;
-        this.pos.z += this.fleeZ * runSpeed * dt;
+      const c = this.zs[Math.floor(this.rng.next() * this.zs.length)];
+      const along = -HALF + 20 + this.rng.next() * (HALF * 2 - 40);
+      const side = this.pos.z < c ? 1 : -1;
+      return { x: along, z: c + side * 7.6 };
+    }
+    return this._spot(this.rng);
+  }
+
+  step(dt, ctx) {
+    const { rng } = this;
+    if (this.state === 'down') {
+      this.downT -= dt;
+      if (this.downT > 0) return;
+      this.mesh.rotation.z = 0;
+      this.mesh.rotation.y = this.heading;
+      if (this.fleeAfterDown) {
+        this.fleeAfterDown = false;
+        this.state = 'run';
+        this.runT = 2.2;
         this.heading = Math.atan2(this.fleeX, this.fleeZ);
-        this.mesh.rotation.y = this.heading;
-        this.pos.x = Math.max(bounds.minX + 2, Math.min(bounds.maxX - 2, this.pos.x));
-        this.pos.z = Math.max(bounds.minZ + 2, Math.min(bounds.maxZ - 2, this.pos.z));
-        if (this.fleeTimer <= 0) {
-          this.state = 'walk';
-          this.waypoint = pickWaypoint(rng, xs, zs, this.pos, this.district);
-        }
-        return;
+      } else {
+        this.state = 'stroll';
+        this.walkSpeed = Math.max(0.8, this.walkSpeed * 0.85);
+        this.target = this._nextTarget();
       }
-      case 'pause': {
-        this.speed = 0;
-        this.pauseTimer -= dt;
-        if (this.pauseTimer <= 0) {
-          this.state = 'walk';
-          this.waypoint = pickWaypoint(rng, xs, zs, this.pos, this.district);
-        }
-        return;
-      }
-      default: { // walk
-        const dx = this.waypoint.x - this.pos.x;
-        const dz = this.waypoint.z - this.pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist < 0.6) {
-          if (rng.chance(0.35)) {
-            this.state = 'pause';
-            this.pauseTimer = 1 + rng.range(0, 3);
-            this.speed = 0;
-          } else {
-            this.waypoint = pickWaypoint(rng, xs, zs, this.pos, this.district);
-          }
-          return;
-        }
-        this.heading = turnToward(this.heading, Math.atan2(dx, dz), 3, dt);
-        this.speed = this.walkSpeed;
-        this.pos.x += Math.sin(this.heading) * this.speed * dt;
-        this.pos.z += Math.cos(this.heading) * this.speed * dt;
-        this.mesh.rotation.y = this.heading;
-      }
+      return;
     }
-  }
-}
-
-// A stray dog: a small quadruped that trots the sidewalks, nose to the
-// ground, and bolts when a fast car comes near. It reuses the walkers'
-// waypoint system (sidewalkPoint / pickWaypoint) so it stays on the
-// pavements, and it is small enough to read as a dog at a glance — a
-// low body, a head with floppy ears, four trotting legs and a wagging
-// tail. Three of them live in the city.
-class Dog {
-  constructor(T, rng, xs, zs) {
-    const start = sidewalkPoint(rng, xs, zs);
-    const coat = [0x8a5a2b, 0x3a3a3a, 0xd9c08a][rng.int(0, 2)];
-    const mat = new THREE.MeshStandardMaterial({ color: coat, roughness: 0.9 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x2b2118, roughness: 0.9 });
-    this.mesh = new THREE.Group();
-    // Low body, head up front, tail at the back.
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.3, 0.85), mat);
-    body.position.y = 0.35;
-    this.mesh.add(body);
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.26, 0.3), mat);
-    head.position.set(0, 0.55, 0.5);
-    this.mesh.add(head);
-    // Floppy ears and a dark nose.
-    for (const side of [-1, 1]) {
-      const ear = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.14), dark);
-      ear.position.set(side * 0.14, 0.62, 0.48);
-      ear.rotation.z = side * 0.3;
-      this.mesh.add(ear);
-    }
-    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.08), dark);
-    nose.position.set(0, 0.52, 0.67);
-    this.mesh.add(nose);
-    // Four legs, kept so the update loop can trot them.
-    this.legs = [];
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.3, 0.09), dark);
-        leg.position.set(sx * 0.18, 0.15, sz * 0.3);
-        this.mesh.add(leg);
-        this.legs.push(leg);
-      }
-    }
-    this.tail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.35), mat);
-    this.tail.position.set(0, 0.45, -0.55);
-    this.tail.rotation.x = -0.5;
-    this.mesh.add(this.tail);
-    this.mesh.position.set(start.x, 0, start.z);
-    this.pos = this.mesh.position;
-    this.heading = rng.range(0, Math.PI * 2);
-    this.trotSpeed = 2.0 + rng.range(0, 0.8);
-    this.speed = 0;
-    this.state = 'trot';
-    this.waypoint = pickWaypoint(rng, xs, zs, this.pos, 'city');
-    this.sniffTimer = rng.range(0, 3);
-    this.fleeTimer = 0;
-    this.fleeX = 1;
-    this.fleeZ = 0;
-    this.phase = rng.range(0, Math.PI * 2);
-    this.mesh.rotation.y = this.heading;
-  }
-
-  step(dt, ctx) {
-    const { rng, xs, zs, bounds } = ctx;
-    if (this.state === 'flee') {
-      this.fleeTimer -= dt;
-      this.speed = 5.5;
-      this.pos.x += this.fleeX * this.speed * dt;
-      this.pos.z += this.fleeZ * this.speed * dt;
+    if (this.state === 'run') {
+      this.runT -= dt;
+      const runSpeed = 4.2;
+      this.speed = runSpeed;
+      this.pos.x += this.fleeX * runSpeed * dt;
+      this.pos.z += this.fleeZ * runSpeed * dt;
       this.heading = Math.atan2(this.fleeX, this.fleeZ);
       this.mesh.rotation.y = this.heading;
-      this.pos.x = Math.max(bounds.minX + 2, Math.min(bounds.maxX - 2, this.pos.x));
-      this.pos.z = Math.max(bounds.minZ + 2, Math.min(bounds.maxZ - 2, this.pos.z));
-      if (this.fleeTimer <= 0) {
-        this.state = 'trot';
-        this.waypoint = pickWaypoint(rng, xs, zs, this.pos, 'city');
+      this.pos.x = Math.max(ctx.bounds.minX + 2, Math.min(ctx.bounds.maxX - 2, this.pos.x));
+      this.pos.z = Math.max(ctx.bounds.minZ + 2, Math.min(ctx.bounds.maxZ - 2, this.pos.z));
+      if (this.runT <= 0) {
+        this.state = 'stroll';
+        this.target = this._nextTarget();
       }
       return;
     }
-    if (this.state === 'sniff') {
+    if (this.state === 'wait') {
       this.speed = 0;
-      this.sniffTimer -= dt;
-      // Head down, tail still wagging.
-      this.mesh.children[1].position.y = 0.42;
-      if (this.sniffTimer <= 0) {
-        this.state = 'trot';
-        this.mesh.children[1].position.y = 0.55;
-        this.waypoint = pickWaypoint(rng, xs, zs, this.pos, 'city');
+      this.waitT -= dt;
+      if (this.waitT <= 0) {
+        this.state = 'stroll';
+        this.target = this._nextTarget();
       }
       return;
     }
-    // Trot toward the waypoint; stop to sniff now and then.
-    const dx = this.waypoint.x - this.pos.x;
-    const dz = this.waypoint.z - this.pos.z;
+    // Stroll toward the waypoint; on arrival, sometimes pause — and
+    // phone zombies stop longer to stare at their screen.
+    const dx = this.target.x - this.pos.x;
+    const dz = this.target.z - this.pos.z;
     const dist = Math.hypot(dx, dz);
     if (dist < 0.6) {
-      if (rng.chance(0.3)) {
-        this.state = 'sniff';
-        this.sniffTimer = 1 + rng.range(0, 2);
+      if (rng.next() < 0.35 || (this.phone && rng.next() < 0.3)) {
+        this.state = 'wait';
+        this.waitT = this.phone ? 3 + rng.next() * 4 : 1 + rng.next() * 3;
         this.speed = 0;
       } else {
-        this.waypoint = pickWaypoint(rng, xs, zs, this.pos, 'city');
+        this.target = this._nextTarget();
       }
       return;
     }
-    this.heading = turnToward(this.heading, Math.atan2(dx, dz), 4, dt);
-    this.speed = this.trotSpeed;
+    this.heading = steerToward(this.heading, Math.atan2(dx, dz), 3 * dt);
+    this.speed = this.walkSpeed;
     this.pos.x += Math.sin(this.heading) * this.speed * dt;
     this.pos.z += Math.cos(this.heading) * this.speed * dt;
     this.mesh.rotation.y = this.heading;
   }
 }
 
-export function createPedestrians(THREE, world, rng, n) {
-  // Tolerant signature: createPedestrians(THREE, world, count) without
-  // an rng makes a seeded one internally.
-  if (typeof rng === 'number' || rng === undefined || rng === null) {
-    n = rng;
-    rng = createRNG(777001);
-  }
-  const xs = roadCentres();
-  const zs = roadCentres();
-  const bounds = (world && world.bounds) || { minX: -HALF, maxX: HALF, minZ: -HALF, maxZ: HALF };
-  const count = Math.max(0, n | 0);
-  const people = [];
-  for (let i = 0; i < count; i += 1) {
-    // One in six people strolls the boardwalk instead of the city.
-    const district = i % 6 === 5 ? 'boardwalk' : 'city';
-    const person = new Walker(THREE, rng, xs, zs, district);
-    people.push(person);
-    if (world && world.group && typeof world.group.add === 'function') {
-      world.group.add(person.mesh);
+// A stray dog: trots around, sniffs, bolts from cars.
+class Dog {
+  constructor(T, rng) {
+    this.rng = rng;
+    const g = new T.Group();
+    const coat = new T.MeshStandardMaterial({ color: rng.pick([0x8a6a45, 0x3a3a3a, 0xc9a06a]), roughness: 0.95 });
+    const body = new T.Mesh(new T.BoxGeometry(0.9, 0.4, 0.35), coat);
+    body.position.y = 0.42;
+    body.castShadow = true;
+    g.add(body);
+    const head = new T.Mesh(new T.BoxGeometry(0.35, 0.3, 0.3), coat);
+    head.position.set(0.55, 0.55, 0);
+    g.add(head);
+    const snout = new T.Mesh(new T.BoxGeometry(0.25, 0.15, 0.18), coat);
+    snout.position.set(0.8, 0.48, 0);
+    g.add(snout);
+    for (const [lx, lz] of [[0.32, 0.14], [0.32, -0.14], [-0.32, 0.14], [-0.32, -0.14]]) {
+      const leg = new T.Mesh(new T.BoxGeometry(0.1, 0.4, 0.1), coat);
+      leg.position.set(lx, 0.2, lz);
+      g.add(leg);
     }
-  }
-  // Three stray dogs trot the city sidewalks.
-  const dogs = [];
-  for (let i = 0; i < 3; i += 1) {
-    const dog = new Dog(THREE, rng, xs, zs);
-    dogs.push(dog);
-    if (world && world.group && typeof world.group.add === 'function') {
-      world.group.add(dog.mesh);
-    }
+    const tail = new T.Mesh(new T.BoxGeometry(0.35, 0.08, 0.08), coat);
+    tail.position.set(-0.6, 0.6, 0);
+    tail.rotation.z = 0.6;
+    g.add(tail);
+    this.mesh = g;
+    this.pos = g.position;
+    const start = { x: -180 + rng.next() * 360, z: -180 + rng.next() * 360 };
+    this.pos.set(start.x, 0, start.z);
+    this.heading = rng.next() * Math.PI * 2;
+    this.speed = 0;
+    this.state = 'trot';
+    this.target = start;
+    this.timer = 2 + rng.next() * 4;
+    this.fleeX = 1;
+    this.fleeZ = 0;
   }
 
-  const peds = {
+  step(dt, threats, bounds) {
+    if (this.state === 'bolt') {
+      this.timer -= dt;
+      this.speed = 6;
+      this.pos.x += this.fleeX * 6 * dt;
+      this.pos.z += this.fleeZ * 6 * dt;
+      this.pos.x = Math.max(bounds.minX + 2, Math.min(bounds.maxX - 2, this.pos.x));
+      this.pos.z = Math.max(bounds.minZ + 2, Math.min(bounds.maxZ - 2, this.pos.z));
+      this.mesh.rotation.y = Math.atan2(this.fleeX, this.fleeZ) - Math.PI / 2;
+      if (this.timer <= 0) this.state = 'trot';
+      return;
+    }
+    for (const t of threats) {
+      if (!t || !t.pos) continue;
+      const dx = this.pos.x - t.pos.x;
+      const dz = this.pos.z - t.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 7 && Math.abs(t.speed || 0) > 5) {
+        this.state = 'bolt';
+        this.timer = 1.6;
+        this.fleeX = dx / (d || 1);
+        this.fleeZ = dz / (d || 1);
+        return;
+      }
+    }
+    this.timer -= dt;
+    if (this.timer <= 0) {
+      this.state = this.state === 'sniff' ? 'trot' : 'sniff';
+      this.timer = 2 + this.rng.next() * 4;
+      if (this.state === 'trot') {
+        this.target = { x: -180 + this.rng.next() * 360, z: -180 + this.rng.next() * 360 };
+      }
+    }
+    if (this.state === 'trot') {
+      const dx = this.target.x - this.pos.x;
+      const dz = this.target.z - this.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 0.5) {
+        this.heading = steerToward(this.heading, Math.atan2(dx, dz), 4 * dt);
+        this.speed = 2.2;
+        this.pos.x += Math.sin(this.heading) * this.speed * dt;
+        this.pos.z += Math.cos(this.heading) * this.speed * dt;
+        this.mesh.rotation.y = this.heading - Math.PI / 2;
+      } else {
+        this.speed = 0;
+      }
+    } else {
+      this.speed = 0;
+    }
+  }
+}
+
+export function makePedestrians(THREE, city, rng, n) {
+  const xs = city.roadXs;
+  const zs = city.roadZs;
+  const bounds = city.limits;
+  const people = [];
+  const count = Math.max(0, n | 0);
+  for (let i = 0; i < count; i += 1) {
+    const area = i % 6 === 5 ? 'boardwalk'
+      : i % 11 === 10 ? 'yard'
+      : i % 13 === 12 ? 'house'
+      : i % 17 === 16 ? 'casino'
+      : 'city';
+    const person = new Walker(THREE, rng, xs, zs, area);
+    people.push(person);
+    city.group.add(person.mesh);
+  }
+  const dogs = [];
+  for (let i = 0; i < 3; i += 1) {
+    const dog = new Dog(THREE, rng);
+    dogs.push(dog);
+    city.group.add(dog.mesh);
+  }
+
+  const crowd = {
     people,
     dogs,
     playerCar: null,
@@ -427,33 +384,28 @@ export function createPedestrians(THREE, world, rng, n) {
     time: 0,
 
     setPlayer(car) {
-      peds.playerCar = car || null;
-      return peds;
+      crowd.playerCar = car || null;
+      return crowd;
     },
 
-    // Knock one pedestrian down (a car hit them). Public so the main loop
-    // can also trigger it from its own collision check.
     knockDown(person) {
       if (!person || person.state === 'down') return;
       person.state = 'down';
-      person.downTimer = 3.5;
+      person.downT = 3.5;
       person.fleeAfterDown = false;
       person.speed = 0;
-      person.mesh.rotation.z = Math.PI / 2; // flat on the sidewalk
+      person.mesh.rotation.z = Math.PI / 2;
       person.mesh.rotation.y = person.heading;
-      peds.lastHit = { person, at: peds.time };
-      if (typeof peds.onHit === 'function') {
-        try { peds.onHit(person); } catch { /* a hook must never break the crowd */ }
+      crowd.lastHit = { person, at: crowd.time };
+      if (typeof crowd.onHit === 'function') {
+        try { crowd.onHit(person); } catch { /* a hook must never break the crowd */ }
       }
     },
 
-    // Shove one pedestrian (the player's F punch): they stumble and fall
-    // for ~2 s, then scramble up and flee from the shover. `fromX/fromZ`
-    // is where the punch came from, so the flee direction is away.
     shove(person, fromX, fromZ) {
       if (!person || person.state === 'down') return false;
       person.state = 'down';
-      person.downTimer = 2.0;
+      person.downT = 2.0;
       person.fleeAfterDown = true;
       const dx = person.pos.x - (fromX ?? person.pos.x);
       const dz = person.pos.z - (fromZ ?? person.pos.z);
@@ -463,11 +415,10 @@ export function createPedestrians(THREE, world, rng, n) {
       person.speed = 0;
       person.mesh.rotation.z = Math.PI / 2;
       person.mesh.rotation.y = person.heading;
-      peds.lastHit = { person, at: peds.time };
+      crowd.lastHit = { person, at: crowd.time };
       return true;
     },
 
-    // The nearest fast vehicle (player car or cruiser) threatening `p`.
     _nearestThreat(p, threats) {
       let best = null;
       let bestD = 9;
@@ -482,12 +433,10 @@ export function createPedestrians(THREE, world, rng, n) {
     },
 
     update(dt, playerCar, copCars) {
-      if (!dt || dt <= 0) return peds;
+      if (!dt || dt <= 0) return crowd;
       dt = Math.min(dt, 0.05);
-      peds.time += dt;
-      const player = playerCar || peds.playerCar;
-      // Everything that can scare the crowd: the player's car when it is
-      // moving fast, plus every police cruiser on the road.
+      crowd.time += dt;
+      const player = playerCar || crowd.playerCar;
       const threats = [];
       if (player && player.pos && Math.abs(player.speed || 0) > 6) threats.push(player);
       if (Array.isArray(copCars)) {
@@ -498,62 +447,36 @@ export function createPedestrians(THREE, world, rng, n) {
       const playerPos = player && player.pos ? player.pos : null;
       const playerSpeed = player ? Math.abs(player.speed || 0) : 0;
       const carIsThreat = !!playerPos && playerSpeed > 6;
-      const ctx = { rng, xs, zs, bounds };
+      const ctx = { bounds };
 
       for (const p of people) {
-        // A fast vehicle within ~9 units sends them running away from it.
-        if (p.state !== 'flee' && p.state !== 'down') {
-          const threat = peds._nearestThreat(p, threats);
+        if (p.state !== 'run' && p.state !== 'down') {
+          const threat = crowd._nearestThreat(p, threats);
           if (threat) {
-            p.state = 'flee';
-            p.fleeTimer = 1.4;
+            p.state = 'run';
+            p.runT = 1.4;
             p.fleeX = threat.dx / (threat.dist || 1);
             p.fleeZ = threat.dz / (threat.dist || 1);
           }
         }
         p.step(dt, ctx);
-
-        // Hit check: a fast car clipping a pedestrian knocks them down.
         if (carIsThreat && p.state !== 'down') {
           const dx = p.pos.x - playerPos.x;
           const dz = p.pos.z - playerPos.z;
-          if (dx * dx + dz * dz < 2.2 * 2.2) peds.knockDown(p);
+          if (dx * dx + dz * dz < 2.2 * 2.2) crowd.knockDown(p);
         }
-
-        // Walk-cycle: arms swing with the stride, faster when fleeing.
-        const swing = Math.sin(peds.time * (p.state === 'flee' ? 11 : 6) + p.phase)
+        const swing = Math.sin(crowd.time * (p.state === 'run' ? 11 : 6) + p.phase)
           * (p.speed > 0.1 ? 0.55 : 0);
         const arms = p.mesh.userData.arms;
         if (arms) {
           arms[0].rotation.x = swing;
           arms[1].rotation.x = -swing;
         }
-        // Little bob while moving.
-        p.mesh.position.y = p.speed > 0.1 ? Math.abs(Math.sin(peds.time * 6 + p.phase)) * 0.04 : 0;
+        p.mesh.position.y = p.speed > 0.1 ? Math.abs(Math.sin(crowd.time * 6 + p.phase)) * 0.04 : 0;
       }
-      // The dogs trot, sniff and bolt from fast cars just like the crowd.
-      for (const d of dogs) {
-        if (d.state !== 'flee') {
-          const threat = peds._nearestThreat(d, threats);
-          if (threat) {
-            d.state = 'flee';
-            d.fleeTimer = 1.6;
-            d.fleeX = threat.dx / (threat.dist || 1);
-            d.fleeZ = threat.dz / (threat.dist || 1);
-          }
-        }
-        d.step(dt, ctx);
-        // Trot cycle: diagonal legs swing together; the tail wags.
-        const trot = Math.sin(peds.time * 10 + d.phase) * (d.speed > 0.1 ? 0.5 : 0);
-        d.legs[0].rotation.x = trot;
-        d.legs[3].rotation.x = trot;
-        d.legs[1].rotation.x = -trot;
-        d.legs[2].rotation.x = -trot;
-        d.tail.rotation.y = Math.sin(peds.time * 6 + d.phase) * 0.5;
-        d.mesh.position.y = d.speed > 0.1 ? Math.abs(Math.sin(peds.time * 10 + d.phase)) * 0.03 : 0;
-      }
-      return peds;
+      for (const dog of dogs) dog.step(dt, threats, bounds);
+      return crowd;
     },
   };
-  return peds;
+  return crowd;
 }
