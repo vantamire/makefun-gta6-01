@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VICE HARBOR — Open-World Crime Game</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1230;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  /* ---- HUD ---- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; color: #fff; }
+  #hud-money { position: absolute; top: 14px; left: 16px; font-size: 30px; font-weight: 800;
+    color: #7dff9e; text-shadow: 0 2px 6px rgba(0,0,0,.8); letter-spacing: 1px; }
+  #hud-stars { position: absolute; top: 52px; left: 16px; font-size: 24px; letter-spacing: 3px;
+    color: #ffd23c; text-shadow: 0 0 10px rgba(255,210,60,.6), 0 2px 4px rgba(0,0,0,.8); }
+  #hud-stars.hot { color: #ff4d4d; text-shadow: 0 0 12px rgba(255,77,77,.8), 0 2px 4px rgba(0,0,0,.8); }
+  #hud-minimap { position: absolute; top: 14px; right: 14px; width: 180px; height: 180px;
+    border: 2px solid rgba(255,255,255,.35); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+  #hud-objective { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: rgba(10,12,24,.78); border: 1px solid rgba(255,210,60,.5); border-radius: 6px;
+    padding: 9px 18px; font-size: 16px; font-weight: 600; white-space: nowrap;
+    max-width: 90vw; overflow: hidden; text-overflow: ellipsis; }
+  #hud-speed { position: absolute; bottom: 18px; right: 16px; font-size: 26px; font-weight: 800;
+    color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,.9); }
+  #hud-message { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+    font-size: 26px; font-weight: 700; text-align: center; color: #fff;
+    text-shadow: 0 0 14px rgba(255,120,60,.9), 0 2px 6px rgba(0,0,0,.9);
+    transition: opacity .4s; opacity: 0; max-width: 80vw; }
+
+  /* ---- Mission menu ---- */
+  #hud-mission-menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 460px; max-width: 92vw; background: rgba(12,14,28,.94); border: 1px solid rgba(255,210,60,.6);
+    border-radius: 10px; padding: 18px 20px; pointer-events: auto; box-shadow: 0 10px 40px rgba(0,0,0,.7); }
+  #hud-mission-menu h2 { margin: 0 0 12px; color: #ffd23c; letter-spacing: 2px; font-size: 22px; }
+  .mission-row { display: block; width: 100%; text-align: left; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.18); color: #fff; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 15px; }
+  .mission-row:hover, .mission-row.active { background: rgba(255,210,60,.18); border-color: #ffd23c; }
+  .mission-row b { display: block; font-size: 16px; }
+  .mission-row span { float: right; color: #7dff9e; font-weight: 700; }
+  .mission-row em { display: block; font-style: normal; color: #b9bec9; font-size: 13px; margin-top: 3px; }
+
+  /* ---- Full-screen overlays ---- */
+  .hud-overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: linear-gradient(180deg, rgba(20,10,40,.82), rgba(40,16,60,.88));
+    pointer-events: auto; }
+  .hud-overlay h1 { margin: 0; font-size: 64px; font-weight: 900; letter-spacing: 6px;
+    background: linear-gradient(180deg, #ffd23c, #ff4fd8 70%, #ff6b3c);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 0 40px rgba(255,79,216,.35); }
+  .hud-overlay .tag { font-size: 18px; color: #dfe3ee; margin: 14px 0 22px; line-height: 1.5; }
+  .hud-overlay .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 26px;
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 8px; padding: 14px 20px; margin-bottom: 24px; text-align: left; font-size: 15px; color: #cfd4e0; }
+  .hud-overlay .controls b { color: #ffd23c; }
+  .hud-overlay button { pointer-events: auto; cursor: pointer; font-size: 20px; font-weight: 800;
+    letter-spacing: 2px; color: #1a1230; background: linear-gradient(180deg, #ffd23c, #ff9d2e);
+    border: none; border-radius: 8px; padding: 14px 42px; box-shadow: 0 6px 24px rgba(255,157,46,.5); }
+  .hud-overlay button:hover { filter: brightness(1.1); }
+  .hud-overlay .hint { margin-top: 16px; font-size: 13px; color: #9aa0b0; }
+  #hud-busted h1 { background: linear-gradient(180deg, #ff6b6b, #c81e1e); -webkit-background-clip: text; background-clip: text; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<canvas id="game" aria-label="VICE HARBOR: explore the city on foot or by car, run missions and outrun the police"></canvas>
+<p id="status" role="status" aria-live="polite"></p>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
