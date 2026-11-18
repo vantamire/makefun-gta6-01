@@ -1,26 +1,34 @@
 // Keyboard + mouse input state, consumed by main.js and player.js.
 // Tracks a live set of pressed codes, mouse-drag deltas for the orbit
 // camera, and the mouse wheel for zoom. One-shot presses (pause, enter
-// car, mission menu) are queued as bit flags and taken once by the loop,
-// so a press between two frames is never lost and never counted twice.
+// car, mission menu, camera, punch) are queued as bit flags and taken once
+// by the loop, so a press between two frames is never lost and never
+// counted twice. Number keys 1-4 are queued separately as a mission pick,
+// so the M menu can be driven from the keyboard alone.
+// v2: ACTION_PUNCH (F) for on-foot combat, digit picks for the mission menu.
 
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
 export const ACTION_ENTER_EXIT = 4;
 export const ACTION_MISSION_MENU = 8;
 export const ACTION_CAMERA = 16;
+export const ACTION_PUNCH = 32;
 
 const CONFIRM = new Set(['Space', 'Enter']);
 const PAUSE = new Set(['KeyP', 'Escape']);
 const ENTER_EXIT = new Set(['KeyE']);
 const MISSION_MENU = new Set(['KeyM']);
 const CAMERA = new Set(['KeyC']);
+const PUNCH = new Set(['KeyF']);
+const DIGITS = new Set(['Digit1', 'Digit2', 'Digit3', 'Digit4']);
 
 export class Input {
   constructor(canvas) {
     this.canvas = canvas || null;
     this.keys = new Set();
     this.actions = 0;
+    // Queued mission pick: 1-4 from the Digit keys, 0 = none. Taken once.
+    this.digitPick = 0;
     this.mouseDown = false;
     this.dragDX = 0;
     this.dragDY = 0;
@@ -33,6 +41,8 @@ export class Input {
         else if (ENTER_EXIT.has(e.code)) this.actions |= ACTION_ENTER_EXIT;
         else if (MISSION_MENU.has(e.code)) this.actions |= ACTION_MISSION_MENU;
         else if (CAMERA.has(e.code)) this.actions |= ACTION_CAMERA;
+        else if (PUNCH.has(e.code)) this.actions |= ACTION_PUNCH;
+        else if (DIGITS.has(e.code)) this.digitPick = Number(e.code.slice(5));
       }
       this.keys.add(e.code);
     };
@@ -94,6 +104,13 @@ export class Input {
     const taken = this.actions;
     this.actions = 0;
     return taken;
+  }
+
+  // Queued Digit1-4 press since the last call (1-4, or 0 when none).
+  takeDigitPick() {
+    const pick = this.digitPick;
+    this.digitPick = 0;
+    return pick;
   }
 
   // Consume the accumulated mouse-drag delta since the last call.

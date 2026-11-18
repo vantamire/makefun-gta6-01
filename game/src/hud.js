@@ -2,14 +2,21 @@
 // mission objective + distance + timer, speedometer, centre messages,
 // and the start / paused / busted / mission-complete screens.
 // All DOM/CSS lives here plus the <style> in index.html.
+// v2: the speedometer and the objective bar only show while actually
+// playing (v1 left a ghost speed on the mission-complete screen and the
+// objective bar under the BUSTED overlay), the controls list names the
+// camera (C), punch (F) and 1-4 mission picks, and the mission menu
+// reports whether it is open so the keyboard can pick from it.
+
 import { CONFIG } from './config.js';
 
 const CONTROLS_HTML = `
   <div class="ctl"><b>W A S D</b> move / drive</div>
   <div class="ctl"><b>Shift</b> run &nbsp; <b>Space</b> handbrake</div>
   <div class="ctl"><b>E</b> enter / exit car &nbsp; <b>M</b> missions</div>
+  <div class="ctl"><b>F</b> punch &nbsp; <b>C</b> camera &nbsp; <b>1-4</b> pick mission</div>
   <div class="ctl"><b>Mouse drag</b> orbit camera &nbsp; <b>Wheel</b> zoom</div>
-  <div class="ctl"><b>P</b> pause &nbsp; <b>H</b> horn</div>`;
+  <div class="ctl"><b>P</b> pause &nbsp; <b>H</b> horn &nbsp; <b>Enter</b> start / continue</div>`;
 
 export class HUD {
   constructor() {
@@ -63,7 +70,7 @@ export class HUD {
       <p class="tag">A sun-soaked open-world crime story. Steal cars, outrun the law,<br>run missions and make your name on the harbor.</p>
       <div class="controls">${CONTROLS_HTML}</div>
       <button id="hud-start-btn">START ENGINE</button>
-      <p class="hint">Best played with keyboard + mouse. Click Start to play.</p>`);
+      <p class="hint">Best played with keyboard + mouse. Click Start or press Enter to play.</p>`);
     this.pauseEl = this._makeOverlay('hud-pause', `
       <h1>PAUSED</h1><p class="tag">The city waits for you.</p>
       <button id="hud-resume-btn">RESUME</button>`);
@@ -143,9 +150,9 @@ export class HUD {
     list.forEach((m, i) => {
       const active = activeId === m.id || activeId === i;
       html += `<button class="mission-row${active ? ' active' : ''}" data-i="${i}">
-        <b>${m.title}</b><span>$${m.payout}</span><em>${m.brief || ''}</em></button>`;
+        <b>${i + 1}. ${m.title}</b><span>$${m.payout}</span><em>${m.brief || ''}</em></button>`;
     });
-    html += '<p class="hint">Click a mission to start it. Press M to close.</p>';
+    html += '<p class="hint">Click a mission or press 1-4 to start it. Press M to close.</p>';
     this.menuEl.innerHTML = html;
     this.menuEl.style.display = 'block';
     this.menuEl.querySelectorAll('.mission-row').forEach((btn) => {
@@ -157,6 +164,13 @@ export class HUD {
   }
 
   hideMissionMenu() { this.menuEl.style.display = 'none'; }
+
+  // True while the M menu is on screen (the main loop uses this for the
+  // 1-4 keyboard picks).
+  missionMenuOpen() {
+    return this.menuEl.style.display === 'block';
+  }
+
   toggleMissionMenu(missions, activeId) {
     if (this.menuEl.style.display === 'block') this.hideMissionMenu();
     else this.showMissionMenu(missions, activeId);
@@ -304,6 +318,13 @@ export class HUD {
   }
 
   _drawObjective(state) {
+    // v2: the objective bar is a playing-state element only. v1 left it
+    // showing under the BUSTED overlay (and its "Press M" line behind the
+    // mission-complete screen); every non-playing state hides it now.
+    if (state.state !== 'playing') {
+      this.objectiveEl.style.display = 'none';
+      return;
+    }
     const m = state.missions;
     if (m && m.active) {
       const a = m.active;
@@ -327,11 +348,9 @@ export class HUD {
       }
       this.objectiveEl.textContent = text;
       this.objectiveEl.style.display = 'block';
-    } else if (state.state === 'playing') {
+    } else {
       this.objectiveEl.textContent = 'Press M for missions — E to steal a car';
       this.objectiveEl.style.display = 'block';
-    } else {
-      this.objectiveEl.style.display = 'none';
     }
   }
 
@@ -343,8 +362,10 @@ export class HUD {
   }
 
   _drawSpeed(state) {
+    // v2: the speedometer only shows while playing. v1 kept the last
+    // speed (a ghost "98 km/h") on the mission-complete screen.
     const v = state.playerVehicle;
-    if (v && state.player && !state.player.onFoot) {
+    if (v && state.player && !state.player.onFoot && state.state === 'playing') {
       const kmh = Math.abs(v.speed || 0) * 3.6;
       this.speedEl.textContent = Math.round(kmh) + ' km/h';
       this.speedEl.style.display = 'block';

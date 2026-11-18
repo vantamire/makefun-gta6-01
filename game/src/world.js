@@ -5,6 +5,10 @@
 // and a pier on the east edge, distant skyline silhouettes, clouds, and
 // dusk lighting (hemisphere + directional sun, fog, sky gradient).
 // All textures are procedural canvas textures — no image files.
+// v2: the sun sits EAST over the water (the drive/chase cameras face it),
+// 3 bobbing boats + a lighthouse with a rotating beam at the pier end,
+// and two guaranteed parked cars right by the player spawn.
+
 import { CONFIG } from './config.js';
 import { RNG } from './random.js';
 
@@ -157,6 +161,9 @@ export function createWorld(THREE, seed) {
   const colliders = [];
   const roads = [];
   const buildings = [];
+  // Animated harbour props, driven by world.tick(dt, time).
+  const boats = [];
+  let lighthouseBeam = null;
 
   // Shared geometries / materials (keeps draw calls low).
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -166,7 +173,7 @@ export function createWorld(THREE, seed) {
   const sandTex = canvasTexture(sandTexture());
   sandTex.repeat.set(6, 24);
 
-  // ---- ground: grass base under the whole map ----
+  // ---- ground: dusk-olive grass base under the whole map ----
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(waterX1 + half + 40, CONFIG.WORLD_SIZE + 80),
     new THREE.MeshLambertMaterial({ color: CONFIG.GROUND_COLOR })
@@ -177,10 +184,15 @@ export function createWorld(THREE, seed) {
   group.add(ground);
 
   // ---- roads: one long strip per grid line, both directions ----
+  // Road centres sit in the middle of the gaps between blocks: block bz
+  // spans -208+52*bz .. -168+52*bz, so the gap (and its road) is centred
+  // at -214+52*i. (v1 centred roads 6 m off, overlapping the blocks on
+  // one side and leaving a grass strip on the other — cars drove
+  // half on the sidewalk.)
   const roadMat = new THREE.MeshLambertMaterial({ map: roadTex });
   const roadLen = CONFIG.WORLD_SIZE + CONFIG.ROAD_WIDTH;
   for (let i = 0; i <= CONFIG.GRID_BLOCKS; i++) {
-    const c = -half - CONFIG.ROAD_WIDTH / 2 + i * pitch;
+    const c = -half + i * pitch;
     // North-south road.
     const ns = new THREE.Mesh(new THREE.PlaneGeometry(CONFIG.ROAD_WIDTH, roadLen), roadMat.clone());
     ns.material.map = roadTex.clone();
@@ -340,6 +352,45 @@ export function createWorld(THREE, seed) {
     group.add(top);
   }
 
+  // ---- boats bobbing on the water (east of the beach) ----
+  const hullMat = new THREE.MeshLambertMaterial({ color: 0xe8e6df });
+  const hullMat2 = new THREE.MeshLambertMaterial({ color: 0x2e6fd2 });
+  const sailMat = new THREE.MeshLambertMaterial({ color: 0xfff3c4, side: THREE.DoubleSide });
+  const mastMat = new THREE.MeshLambertMaterial({ color: 0x5a4632 });
+  const boatSpots = [
+    { x: beachX1 + 26, z: -84, hull: hullMat, sail: true },
+    { x: beachX1 + 48, z: 12, hull: hullMat2, sail: false },
+    { x: beachX1 + 34, z: 96, hull: hullMat, sail: true },
+  ];
+  for (let i = 0; i < boatSpots.length; i++) {
+    const spot = boatSpots[i];
+    const boat = new THREE.Group();
+    boat.name = 'boat';
+    const hull = new THREE.Mesh(boxGeo, spot.hull);
+    hull.scale.set(6.5, 1.1, 2.4);
+    hull.position.y = 0.4;
+    boat.add(hull);
+    const cabin = new THREE.Mesh(boxGeo, mastMat);
+    cabin.scale.set(2.2, 0.9, 1.6);
+    cabin.position.set(-0.8, 1.3, 0);
+    boat.add(cabin);
+    if (spot.sail) {
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 5.4, 6), mastMat);
+      mast.position.set(0.6, 3.4, 0);
+      boat.add(mast);
+      // Triangular sail: a flattened cone reads as a sail at dusk.
+      const sail = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3.4, 4), sailMat);
+      sail.scale.set(1, 1, 0.18);
+      sail.position.set(0.6, 4.4, 0);
+      sail.rotation.y = Math.PI / 4;
+      boat.add(sail);
+    }
+    boat.position.set(spot.x, 0.15, spot.z);
+    boat.rotation.y = rng.range(-0.5, 0.5);
+    group.add(boat);
+    boats.push({ mesh: boat, baseY: 0.15, phase: i * 2.1 });
+  }
+
   // ---- pier jutting into the water ----
   const pier = new THREE.Group();
   const pierMat = new THREE.MeshLambertMaterial({ color: 0x7a5c3e });
@@ -366,6 +417,38 @@ export function createWorld(THREE, seed) {
   shackSign.rotation.y = Math.PI;
   pier.add(shackSign);
   group.add(pier);
+
+  // ---- lighthouse at the pier end, with a rotating beam ----
+  const lightX = beachX1 + 44;
+  const lightZ = 30;
+  const towerMat = new THREE.MeshLambertMaterial({ color: 0xf2ede2 });
+  const bandMat = new THREE.MeshLambertMaterial({ color: 0xd23c2e });
+  const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.9, 15, 12), towerMat);
+  tower.position.set(lightX, 7.5, lightZ);
+  group.add(tower);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(1.55, 1.7, 2.2, 12), bandMat);
+  band.position.set(lightX, 9.5, lightZ);
+  group.add(band);
+  const lampRoom = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 1.8, 12),
+    new THREE.MeshLambertMaterial({ color: 0x2a2d33 }));
+  lampRoom.position.set(lightX, 15.9, lightZ);
+  group.add(lampRoom);
+  const lampGlow = new THREE.Mesh(new THREE.SphereGeometry(0.9, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffe9a8 }));
+  lampGlow.position.set(lightX, 15.9, lightZ);
+  group.add(lampGlow);
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0xffe9a8, transparent: true, opacity: 0.22,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  // Cone apex at the lamp, widening out over the water: translate the
+  // geometry so the apex sits at the origin, then lay it along +X.
+  const beamGeo = new THREE.ConeGeometry(3.2, 26, 12, 1, true);
+  beamGeo.translate(0, -13, 0);
+  lighthouseBeam = new THREE.Mesh(beamGeo, beamMat);
+  lighthouseBeam.rotation.z = Math.PI / 2; // cone axis along +X
+  lighthouseBeam.position.set(lightX, 15.9, lightZ);
+  group.add(lighthouseBeam);
 
   // ---- distant skyline silhouettes (outside the playable grid) ----
   const skylineMat = new THREE.MeshBasicMaterial({ color: 0x241a3e });
@@ -397,6 +480,8 @@ export function createWorld(THREE, seed) {
   }
 
   // ---- dusk sky dome (gradient) + sun disc ----
+  // The sun sits EAST over the water: the drive and chase cameras face
+  // east, so they look straight into the sunset instead of a flat red band.
   const skyGeo = new THREE.SphereGeometry(560, 24, 16);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -417,27 +502,36 @@ export function createWorld(THREE, seed) {
     new THREE.CircleGeometry(16, 24),
     new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false })
   );
-  sun.position.set(-260, 42, -180);
+  sun.position.set(300, 46, 120);
   sun.lookAt(0, 20, 0);
   group.add(sun);
 
-  // ---- lighting ----
+  // ---- lighting (sunlight comes from the east, over the water) ----
   const hemi = new THREE.HemisphereLight(CONFIG.HEMI_SKY, CONFIG.HEMI_GROUND, CONFIG.HEMI_INTENSITY);
   group.add(hemi);
   const sunLight = new THREE.DirectionalLight(CONFIG.SUN_COLOR, CONFIG.SUN_INTENSITY);
-  sunLight.position.set(-120, 90, -60);
+  sunLight.position.set(160, 90, 80);
   group.add(sunLight);
   const amb = new THREE.AmbientLight(CONFIG.AMBIENT, 0.6);
   group.add(amb);
 
   // ---- spawn points ----
-  const roadC = (i) => -half - CONFIG.ROAD_WIDTH / 2 + i * pitch;
+  // Road centres are the gap centres: -214 + 52*i (see the roads section).
+  const roadC = (i) => -half + i * pitch;
   const spawnPoints = {
     player: [roadC(4), roadC(4) + 4],
     cars: [],
     mission: [roadC(6), roadC(2)],
   };
-  for (let i = 0; i < 10; i++) {
+  // Two guaranteed parked cars right by the player spawn (road at x = -6,
+  // player at (-6, -2)): one a few metres down the road — inside E's 4 m
+  // reach, so the first press works — and one a little further along it,
+  // so E finds a car within seconds of starting.
+  const px = spawnPoints.player[0];
+  const pz = spawnPoints.player[1];
+  spawnPoints.cars.push([px + 2, pz + 3, 0]);
+  spawnPoints.cars.push([px - 3, pz + 10, Math.PI]);
+  for (let i = 0; i < 8; i++) {
     const vertical = rng.chance(0.5);
     const line = roadC(rng.int(1, CONFIG.GRID_BLOCKS - 1));
     const along = rng.range(-half + 30, half - 30);
@@ -452,5 +546,16 @@ export function createWorld(THREE, seed) {
     maxZ: half + CONFIG.ROAD_WIDTH,
   };
 
-  return { group, roads, buildings, colliders, spawnPoints, bounds, rng };
+  // Animate the harbour: boats bob on the swell, the lighthouse beam sweeps.
+  function tick(dt, time) {
+    if (!dt) return;
+    for (const b of boats) {
+      b.mesh.position.y = b.baseY + Math.sin(time * 0.7 + b.phase) * 0.12;
+      b.mesh.rotation.z = Math.sin(time * 0.5 + b.phase) * 0.03;
+      b.mesh.rotation.x = Math.sin(time * 0.6 + b.phase * 1.3) * 0.02;
+    }
+    if (lighthouseBeam) lighthouseBeam.rotation.y = time * 0.35;
+  }
+
+  return { group, roads, buildings, colliders, spawnPoints, bounds, rng, boats, lighthouseBeam, tick };
 }

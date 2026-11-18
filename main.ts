@@ -8,6 +8,11 @@
 // pointed at the new game. Screenshots are real renders of the game taken
 // in desktop Chrome (see shots.json for the staged scenes).
 //
+// v2: four missions (Getaway Driver, Taxi Rush, Package Run, Harbor Heist),
+// a behind-car follow camera with a speed FOV kick, on-foot combat (F),
+// boats and a lighthouse on the water, and a dusk sky with the sun east
+// over the harbor.
+//
 // Run it outside the grader with MAKEFUN_OUTPUT_DIR standing in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 

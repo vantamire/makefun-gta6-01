@@ -145,6 +145,8 @@ export class Vehicle {
     this.width = this.spec.width;
     this.radius = this.length * 0.42; // collision circle, slightly forgiving
     this.topSpeed = this.spec.topSpeed;
+    // Set by spawnArmoredTruck: the Harbor Heist getaway vehicle.
+    this.armored = false;
 
     this.mesh = new T.Group();
     this.mesh.name = `car-${this.kind}`;
@@ -469,10 +471,10 @@ export function spawnParkedCars(THREEImpl, world, n) {
     : null;
 
   // Fallback: park along road edges on the city grid (8x8 blocks of 40,
-  // roads 12 wide, road centres every 52 from -220 to 196, as world.js
+  // roads 12 wide, road centres every 52 from -214 to 202, as world.js
   // places them).
   const roadCentres = [];
-  for (let k = 0; k <= 8; k += 1) roadCentres.push(-220 + k * 52);
+  for (let k = 0; k <= 8; k += 1) roadCentres.push(-214 + k * 52);
 
   for (let i = 0; i < count; i += 1) {
     let x;
@@ -507,4 +509,16 @@ export function spawnParkedCars(THREEImpl, world, n) {
     cars.push(car);
   }
   return cars;
+}
+
+// The Harbor Heist getaway vehicle: a heavy armored truck in bank livery
+// (dark grey + gold stripe), parked at the mission's truck spot. The
+// `armored` flag is what missions.js checks when the player delivers it.
+export function spawnArmoredTruck(THREEImpl, x, z, heading) {
+  const T = THREEImpl || THREE;
+  const truck = new Vehicle(T, 'truck', 0x3a3f4a);
+  truck.armored = true;
+  truck.setPose(x, z, heading === undefined ? 0 : heading);
+  truck.driver = null;
+  return truck;
 }

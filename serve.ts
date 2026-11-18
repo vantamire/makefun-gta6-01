@@ -39,6 +39,12 @@ const MIME: Record<string, string> = {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost');
+  // v2: a tiny health endpoint so a play-test script can tell the server
+  // is up without fetching the game page.
+  if (url.pathname === '/health') {
+    response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end('ok');
+    return;
+  }
   let pathname: string;
   try {
     pathname = decodeURIComponent(url.pathname);

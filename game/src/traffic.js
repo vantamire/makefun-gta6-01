@@ -17,11 +17,12 @@ const PITCH = BLOCK + ROAD; // 52
 const HALF = (BLOCKS * BLOCK + (BLOCKS + 1) * ROAD) / 2; // 214
 
 function defaultRoadCentres() {
-  // Must match the world builder: roads sit at -HALF - ROAD/2 + k*PITCH
-  // (world.js places them there); the +ROAD/2 form lands 12 m off, on the
-  // blocks, where traffic would drive through buildings.
+  // Must match the world builder: roads sit in the middle of the gaps
+  // between blocks, at -HALF + k*PITCH (world.js places them there); the
+  // -HALF - ROAD/2 form lands 6 m off, on the blocks, where traffic
+  // would drive through buildings.
   const centres = [];
-  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF - ROAD / 2 + k * PITCH);
+  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF + k * PITCH);
   return centres;
 }
 
@@ -111,9 +112,11 @@ const TRAFFIC_KINDS = ['sedan', 'sedan', 'sedan', 'taxi', 'sport', 'truck', 'sed
  * @param {object} THREEImpl the three.js module (or the imported one)
  * @param {object} world the world object ({ roads, group, bounds })
  * @param {number} n how many traffic cars to spawn
- * @returns {{ cars: Vehicle[], update(dt, playerCar?), playerCar, setPlayer }}
+ * @returns {{ cars: Vehicle[], update(dt, playerCar?, pedestrians?), playerCar, setPlayer }}
  *   update's optional second argument is the player's current Vehicle (or
  *   any { pos, speed, heading } object); setPlayer() stores it instead.
+ *   The optional third argument is the pedestrians system ({ people }):
+ *   traffic slows for a pedestrian crossing in front of a car.
  */
 export function createTraffic(THREEImpl, world, n) {
   const T = THREEImpl || THREE;
@@ -159,7 +162,7 @@ export function createTraffic(THREEImpl, world, n) {
       return traffic;
     },
 
-    update(dt, playerCar) {
+    update(dt, playerCar, pedestrians) {
       if (!dt || dt <= 0) return traffic;
       dt = Math.min(dt, 0.05);
       const player = playerCar || traffic.playerCar;
@@ -175,6 +178,10 @@ export function createTraffic(THREEImpl, world, n) {
         pfx = Math.sin(h);
         pfz = Math.cos(h);
       }
+      // Pedestrians on the road: traffic slows for anyone crossing ahead
+      // instead of driving through them (v2 — the crowd and the cars
+      // finally notice each other).
+      const walkers = pedestrians && pedestrians.people ? pedestrians.people : null;
       const now = (traffic._time = (traffic._time || 0) + dt);
 
       for (const entry of cars) {
@@ -184,6 +191,21 @@ export function createTraffic(THREEImpl, world, n) {
         // Slow briefly at intersections (approaching a corner).
         const ahead = positionOnLoop(loop, entry.dist + entry.baseSpeed * 1.2);
         if (ahead.toCorner < 9) factor *= 0.55 + 0.45 * (ahead.toCorner / 9);
+        // Yield to a pedestrian crossing just ahead of this car.
+        if (walkers) {
+          const fx = Math.sin(car.heading);
+          const fz = Math.cos(car.heading);
+          for (const p of walkers) {
+            if (p.state === 'down') continue;
+            const dx = p.pos.x - car.pos.x;
+            const dz = p.pos.z - car.pos.z;
+            const along = dx * fx + dz * fz;
+            if (along > 0 && along < 7) {
+              const side = Math.abs(dx * fz - dz * fx);
+              if (side < 2.2) { factor *= 0.25; break; }
+            }
+          }
+        }
         // Yield: a traffic car sitting just ahead of the player's car slows
         // down instead of being rear-ended at full speed.
         if (playerPos && playerSpeed > 2) {

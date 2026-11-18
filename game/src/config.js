@@ -1,5 +1,7 @@
 // VICE HARBOR — shared tuning constants. Single source of truth for the
 // world layout, movement, driving, wanted level and mission economy.
+// v2: deeper dusk sky (sun sits east over the water), dusk-olive grass,
+// a fourth mission (Harbor Heist, $650) and a punch key.
 export const CONFIG = {
   WORLD_SEED: 1,
   // City layout: an 8x8 grid of blocks. Block pitch = block size + road.
@@ -36,14 +38,17 @@ export const CONFIG = {
   WANTED_DECAY_SECONDS: 26,
   WANTED_DECAY_PER_SECOND: 1 / 26,
 
-  // Missions (must match the three jobs missions.js implements).
-  MISSION_PAYOUTS: [500, 350, 300],
+  // Missions (must match the four jobs missions.js implements).
+  MISSION_PAYOUTS: [500, 350, 300, 650],
   MISSION_TIME_LIMIT: 180,
 
-  // Day / dusk look.
-  SKY_TOP: 0x2a1e52,
-  SKY_HORIZON: 0xff7e4a,
-  FOG_COLOR: 0x3a2b55,
+  // Day / dusk look. The sun sits east over the water, so the drive and
+  // chase cameras (which face east) look into the sunset: a deep violet
+  // top fading to a burnt-orange horizon, and olive grass that stays
+  // muted against it instead of shouting bright green.
+  SKY_TOP: 0x1c1440,
+  SKY_HORIZON: 0xd95f3a,
+  FOG_COLOR: 0x33244d,
   FOG_NEAR: 120,
   FOG_FAR: 420,
   SUN_COLOR: 0xffb36b,
@@ -56,7 +61,7 @@ export const CONFIG = {
   // Palette.
   ROAD_COLOR: 0x2b2e38,
   SIDEWALK_COLOR: 0x8f8a80,
-  GROUND_COLOR: 0x3f6b4a,
+  GROUND_COLOR: 0x4a5a35,
   SAND_COLOR: 0xd9c08a,
   WATER_COLOR: 0x1d6f8e,
 
@@ -74,6 +79,7 @@ export const CONFIG = {
     PAUSE: 'KeyP',
     HORN: 'KeyH',
     CAMERA: 'KeyC',
+    PUNCH: 'KeyF',
   },
 };
 
@@ -81,7 +87,7 @@ export const MISSION_DEFS = [
   {
     id: 'getaway',
     title: 'Getaway Driver',
-    brief: 'Steal any car and hit all 3 checkpoints across the city before the clock runs out. The heat is on from the start.',
+    brief: 'Steal any car and hit all 3 checkpoints across the city before the clock runs out. The heat lands when you steal the car.',
     payout: 500,
   },
   {
@@ -95,6 +101,12 @@ export const MISSION_DEFS = [
     title: 'Package Run',
     brief: 'On foot: collect 5 glowing packages stashed around the city before the deadline.',
     payout: 300,
+  },
+  {
+    id: 'heist',
+    title: 'Harbor Heist',
+    brief: 'Steal the armored truck from Coral Bank and deliver it to the pier while 2 stars chase you. $650 if you make it.',
+    payout: 650,
   },
 ];
 

@@ -1,6 +1,7 @@
 // The player on foot: a simple low-poly person (capsule body, head, limbs
-// as boxes). WASD moves relative to the camera, Shift runs, and a simple
-// AABB slide keeps the player out of buildings and inside the bounds.
+// as boxes). WASD moves relative to the camera, Shift runs, F throws a
+// punch, and a simple AABB slide keeps the player out of buildings and
+// inside the bounds.
 import { CONFIG } from './config.js';
 import { clamp } from './random.js';
 
@@ -15,6 +16,10 @@ export class Player {
     this.onFoot = true;
     this.vehicle = null;
     this._walkPhase = 0;
+    // Punch (F): a short forward swing. punchTimer counts the swing down
+    // (the arms animate while it runs); punchCooldown throttles repeats.
+    this.punchTimer = 0;
+    this.punchCooldown = 0;
 
     // Low-poly person, ~1.8 m tall.
     const skin = new THREE.MeshLambertMaterial({ color: 0xd9a066 });
@@ -63,6 +68,9 @@ export class Player {
     }
     this.mesh.visible = true;
     const w = world || this.world;
+    // Punch timers tick down whether the player moves or not.
+    if (this.punchTimer > 0) this.punchTimer -= dt;
+    if (this.punchCooldown > 0) this.punchCooldown -= dt;
     const move = input && typeof input.moveVector === 'function'
       ? input.moveVector()
       : { x: 0, y: 0 };
@@ -99,8 +107,23 @@ export class Player {
       this.legL.rotation.x *= 0.8;
       this.legR.rotation.x *= 0.8;
     }
+    // Punch swing: both arms snap forward while the timer runs, then relax.
+    if (this.punchTimer > 0) {
+      const punchSwing = -1.5 * Math.sin((this.punchTimer / 0.28) * Math.PI);
+      this.armL.rotation.x = punchSwing;
+      this.armR.rotation.x = punchSwing;
+    }
     this.mesh.position.copy(this.pos);
     this.mesh.rotation.y = this.heading;
+  }
+
+  // Throw a punch (F). Returns false while cooling down or in a car; the
+  // main loop does the hit check against nearby pedestrians.
+  punch() {
+    if (!this.onFoot || this.punchCooldown > 0) return false;
+    this.punchTimer = 0.28;
+    this.punchCooldown = 0.6;
+    return true;
   }
 
   // Axis-separated AABB slide: try X, then Z, so the player slides along walls.

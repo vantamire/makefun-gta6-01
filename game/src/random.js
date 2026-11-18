@@ -1,6 +1,7 @@
 // Seeded deterministic RNG (mulberry32) plus small helpers. Every random
 // choice in the world, traffic and missions flows from WORLD_SEED so a
 // screenshot staged from the same seed reproduces exactly.
+// v2: angleLerp — shortest-arc heading interpolation for the follow camera.
 
 // mulberry32: fast, small, deterministic 32-bit PRNG.
 export function mulberry32(seed) {
@@ -57,4 +58,13 @@ export function clamp(v, min, max) {
 
 export function lerp(a, b, t) {
   return a + (b - a) * t;
+}
+
+// Shortest-arc interpolation between two headings (radians): the result
+// never spins the long way around the circle. t in [0, 1].
+export function angleLerp(a, b, t) {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * t;
 }

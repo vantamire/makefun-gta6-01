@@ -21,11 +21,12 @@ const PITCH = BLOCK + ROAD; // 52
 const HALF = (BLOCKS * BLOCK + (BLOCKS + 1) * ROAD) / 2; // 214
 
 function defaultRoadCentres() {
-  // Must match the world builder: roads sit at -HALF - ROAD/2 + k*PITCH
-  // (world.js places them there); the +ROAD/2 form lands 12 m off, on the
-  // blocks, where cruisers would spawn inside buildings.
+  // Must match the world builder: roads sit in the middle of the gaps
+  // between blocks, at -HALF + k*PITCH (world.js places them there); the
+  // -HALF - ROAD/2 form lands 6 m off, on the blocks, where cruisers
+  // would spawn inside buildings.
   const centres = [];
-  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF - ROAD / 2 + k * PITCH);
+  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF + k * PITCH);
   return centres;
 }
 
@@ -126,13 +127,16 @@ export function createPolice(THREEImpl, world) {
       const cop = new Vehicle(T, 'police');
       cop.driver = 'police';
       cop.onCrash = null;
-      // Spawn on a road intersection ~40 units behind the player, so the
-      // siren arrives a beat after the crime instead of on top of it.
+      // Spawn on a road intersection behind the player, so the siren
+      // arrives a beat after the crime instead of on top of it. At one
+      // star the first cruiser starts ~70 m back (v2: 42 m was a bust in
+      // seconds for a player on foot); at higher heat it closes in.
+      const behindDist = police.wanted <= 1 ? 70 : 42;
       let x;
       let z;
       if (playerInfo) {
-        const behindX = playerInfo.pos.x - Math.sin(playerInfo.heading) * 42;
-        const behindZ = playerInfo.pos.z - Math.cos(playerInfo.heading) * 42;
+        const behindX = playerInfo.pos.x - Math.sin(playerInfo.heading) * behindDist;
+        const behindZ = playerInfo.pos.z - Math.cos(playerInfo.heading) * behindDist;
         // Snap to the nearest road centre lines: cops spawn on roads.
         x = clamp(nearestCentre(behindX, roadCentres), bounds.minX + 4, bounds.maxX - 4);
         z = clamp(nearestCentre(behindZ, roadCentres), bounds.minZ + 4, bounds.maxZ - 4);
@@ -223,12 +227,15 @@ export function createPolice(THREEImpl, world) {
       police._ensureCopCount(info);
       if (police.copCars.length === 0) return police;
 
-      // Pursuit speed: at 3+ stars the cruisers are slightly faster than
-      // the player's car, so escaping takes corners, not a straight line.
+      // Pursuit speed: at 1 star the cruisers cruise at ~16 m/s, so a
+      // player on foot (9.5 m/s) is pressured but not caught in seconds
+      // and a car (26-34 m/s) can pull away; at 3+ stars they are
+      // slightly faster than the player's car, so escaping takes corners,
+      // not a straight line.
       const playerTop = info ? info.vehicleTopSpeed : 26;
       const chaseSpeed = police.wanted >= 3
         ? Math.max(30, playerTop + 2)
-        : police.wanted === 2 ? 27 : 23;
+        : police.wanted === 2 ? 27 : 16;
 
       let nearestCopDist = Infinity;
       let rammed = false;

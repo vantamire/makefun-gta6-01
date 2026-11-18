@@ -1,15 +1,37 @@
 // VICE HARBOR — missions.js
-// Three completable jobs, each with checkpoints, a time limit and a payout:
-// Getaway Driver, Taxi Rush and Package Run. Checkpoints are marked in the
-// world by a pulsing light beacon + a floating diamond (built lazily from
-// G.THREE / G.scene on the first update, so this module also runs logic-only
-// with no renderer), and the HUD is fed through G.hud when it exists.
+// Four completable jobs, each with checkpoints, a time limit and a payout:
+// Getaway Driver, Taxi Rush, Package Run and Harbor Heist. Checkpoints are
+// marked in the world by a pulsing light beacon + a floating diamond (built
+// lazily from G.THREE / G.scene on the first update, so this module also
+// runs logic-only with no renderer), and the HUD is fed through G.hud when
+// it exists.
 //
 // Positions are deterministic: road intersections from the city grid, with
 // the player's spawn as the anchor. This module never teleports the player
 // and never throws if another system is absent.
+//
+// v2: Harbor Heist — steal the armored truck from Coral Bank (road
+// intersection 46, -58) and deliver it to the pier (236, 30). The wanted
+// heat lands when the truck is stolen (main.js applies it on entry), not
+// at mission start; the same fix applies to Getaway Driver, whose 1 star
+// now lands when the player steals their first car instead of at the
+// briefing, so the mission is survivable on foot.
 
 import * as THREE from 'three';
+
+// City grid (shared with the world builder): 8x8 blocks of 40, roads 12
+// wide, road centres every 52.
+const BLOCK = 40;
+const ROAD = 12;
+const BLOCKS = 8;
+const PITCH = BLOCK + ROAD; // 52
+const HALF = (BLOCKS * BLOCK + (BLOCKS + 1) * ROAD) / 2; // 214
+
+// Harbor Heist fixed spots. The truck parks at a road intersection by
+// Coral Bank; the pier drop-off is the sand at the pier's foot, where a
+// truck can actually drive (the deck itself is raised).
+export const HEIST_TRUCK_POS = { x: 46, z: -58 };
+export const HEIST_PIER_POS = { x: 236, z: 30 };
 
 // Seeded RNG (mulberry32), local so this file loads standalone.
 function mulberry32(seed) {
@@ -22,20 +44,13 @@ function mulberry32(seed) {
   };
 }
 
-// City grid (shared with the world builder): 8x8 blocks of 40, roads 12
-// wide, road centres every 52.
-const BLOCK = 40;
-const ROAD = 12;
-const BLOCKS = 8;
-const PITCH = BLOCK + ROAD; // 52
-const HALF = (BLOCKS * BLOCK + (BLOCKS + 1) * ROAD) / 2; // 214
-
 function defaultRoadCentres() {
-  // Must match the world builder: roads sit at -HALF - ROAD/2 + k*PITCH
-  // (world.js places them there); the +ROAD/2 form lands 12 m off, on the
-  // blocks, where checkpoints would sit unreachable behind buildings.
+  // Must match the world builder: roads sit in the middle of the gaps
+  // between blocks, at -HALF + k*PITCH (world.js places them there); the
+  // -HALF - ROAD/2 form lands 6 m off, on the blocks, where checkpoints
+  // would sit unreachable behind buildings.
   const centres = [];
-  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF - ROAD / 2 + k * PITCH);
+  for (let k = 0; k <= BLOCKS; k += 1) centres.push(-HALF + k * PITCH);
   return centres;
 }
 
@@ -92,7 +107,7 @@ function addWantedHeat(G, n) {
  *   start(i, G?), update(dt, player, G)
  * }}
  *   `active` is null or the running mission with checkpointIndex, timeLeft
- *   and (taxi) phase. `lastResult` holds { mission, payout, timeLeft }
+ *   and (taxi/heist) phase. `lastResult` holds { mission, payout, timeLeft }
  *   (or { mission, payout: 0, failed: true }) after a mission ends.
  *   Assign `missions.onComplete = (result) => ...` to be told when one ends.
  */
@@ -145,7 +160,7 @@ export function createMissions(world) {
     {
       id: 'getaway',
       title: 'Getaway Driver',
-      briefing: 'Steal any car and hit all 3 checkpoints across the city before the clock runs out. The heat is on from the start.',
+      briefing: 'Steal any car and hit all 3 checkpoints across the city before the clock runs out. The heat lands when you steal the car.',
       payout: 500,
       reward: 500,
       startPos: { ...playerSpawn },
@@ -175,6 +190,19 @@ export function createMissions(world) {
       checkpoints: packagePoints.map((p, i) => ({ x: p.x, z: p.z, label: `Package ${i + 1}/5` })),
       timeLimit: 180,
     },
+    {
+      id: 'heist',
+      title: 'Harbor Heist',
+      briefing: 'Steal the armored truck from Coral Bank and deliver it to the pier. The moment you take the truck, 2 stars come for you.',
+      payout: 650,
+      reward: 650,
+      startPos: { ...HEIST_TRUCK_POS },
+      checkpoints: [
+        { x: HEIST_TRUCK_POS.x, z: HEIST_TRUCK_POS.z, label: 'Steal the armored truck' },
+        { x: HEIST_PIER_POS.x, z: HEIST_PIER_POS.z, label: 'Deliver the truck to the pier' },
+      ],
+      timeLimit: 180,
+    },
   ];
 
   const missions = {
@@ -183,6 +211,9 @@ export function createMissions(world) {
     lastResult: null,
     // Current objective marker position ({x, z}) for the minimap/HUD, or null.
     markerPos: null,
+    // Fixed heist spots, for the main loop (it spawns the truck here).
+    heistTruckPos: { ...HEIST_TRUCK_POS },
+    heistPierPos: { ...HEIST_PIER_POS },
     // Assignable: missions.onComplete = (result) => ...
     onComplete: null,
     _beacon: null,
@@ -191,6 +222,7 @@ export function createMissions(world) {
     _diamondMat: null,
     _scene: null,
     _pendingHeat: 0,
+    _lastHintAt: -Infinity,
 
     _buildMarkers(G) {
       const T = (G && G.THREE) || THREE;
@@ -199,9 +231,9 @@ export function createMissions(world) {
       if (this._beacon) return true;
       // Glowing vertical beacon: a tall additive cylinder the player can
       // see over the rooftops from anywhere in the city.
-      const beaconGeo = new T.CylinderGeometry(1.4, 1.4, 34, 12, 1, true);
+      const beaconGeo = new T.CylinderGeometry(1.1, 1.1, 34, 12, 1, true);
       this._beaconMat = new T.MeshBasicMaterial({
-        color: 0xffc233, transparent: true, opacity: 0.32,
+        color: 0xffc233, transparent: true, opacity: 0.26,
         blending: T.AdditiveBlending, side: T.DoubleSide, depthWrite: false,
       });
       this._beacon = new T.Mesh(beaconGeo, this._beaconMat);
@@ -250,14 +282,14 @@ export function createMissions(world) {
         checkpoints: def.checkpoints.map((c) => ({ ...c })),
         checkpointIndex: 0,
         timeLeft: def.timeLimit,
-        phase: def.id === 'taxi' ? 'pickup' : 'drive',
+        phase: def.id === 'taxi' ? 'pickup' : def.id === 'heist' ? 'steal' : 'drive',
+        // Set by the main loop when the theft that starts the heat happens.
+        heatApplied: false,
       };
       this._placeMarkers(this.active.checkpoints[0]);
-      if (def.id === 'getaway') {
-        // The heat is on from the start.
-        if (G) addWantedHeat(G, 1);
-        else this._pendingHeat = 1;
-      }
+      // No wanted heat here on purpose (v2): the heat lands on the theft —
+      // stealing the getaway car, or the armored truck — so a player on
+      // foot is not busted before they can reach a car.
       hudSay(G, `${def.title} — ${def.briefing}`);
       return this.active;
     },
@@ -335,8 +367,12 @@ export function createMissions(world) {
       }
       const dist = dist2D(pos, checkpoint);
       // Reach radius: generous in a car (6), tight on foot (3.5); taxi
-      // pickup is 4 by the book, so 4.5 covers the marker comfortably.
-      const reach = active.id === 'package' ? 3.5 : active.id === 'taxi' && active.phase === 'pickup' ? 4.5 : 6;
+      // pickup is 4 by the book, so 4.5 covers the marker comfortably;
+      // the heist pier takes the truck's size into account (8).
+      const reach = active.id === 'package' ? 3.5
+        : active.id === 'taxi' && active.phase === 'pickup' ? 4.5
+        : active.id === 'heist' && active.phase === 'deliver' ? 8
+        : 6;
 
       if (dist <= reach) {
         if (active.id === 'taxi' && active.phase === 'pickup') {
@@ -347,6 +383,27 @@ export function createMissions(world) {
           try {
             if (G && G.audio && typeof G.audio.pickup === 'function') G.audio.pickup();
           } catch { /* sound is garnish */ }
+        } else if (active.id === 'heist' && active.phase === 'steal') {
+          active.phase = 'deliver';
+          active.checkpointIndex = 1;
+          this._placeMarkers(active.checkpoints[1]);
+          hudSay(G, 'Truck spotted — get in and drive it to the pier!');
+          try {
+            if (G && G.audio && typeof G.audio.pickup === 'function') G.audio.pickup();
+          } catch { /* sound is garnish */ }
+        } else if (active.id === 'heist' && active.phase === 'deliver') {
+          // The drop-off only counts in the armored truck itself.
+          const inTruck = player && player.vehicle && player.vehicle.armored;
+          if (inTruck) {
+            this._finish(G, false);
+            return missions;
+          }
+          // Throttled hint, not a per-frame toast.
+          const now = missions._time || 0;
+          if (now - this._lastHintAt > 5) {
+            this._lastHintAt = now;
+            hudSay(G, 'You need the armored truck — go back and steal it!');
+          }
         } else if (active.id === 'package') {
           active.checkpointIndex += 1;
           try {
@@ -379,9 +436,13 @@ export function createMissions(world) {
         ? 'Pick up the passenger'
         : active.id === 'package'
           ? `Collect package ${active.checkpointIndex + 1}/5`
-          : active.id === 'taxi'
-            ? 'Deliver the passenger'
-            : current?.label || active.title;
+          : active.id === 'heist' && active.phase === 'steal'
+            ? 'Steal the armored truck'
+            : active.id === 'heist'
+              ? 'Deliver the truck to the pier'
+              : active.id === 'taxi'
+                ? 'Deliver the passenger'
+                : current?.label || active.title;
       hudObjective(G, `${active.title}: ${objective}`, currentDist, active.timeLeft);
       return missions;
     },

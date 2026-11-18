@@ -1,7 +1,7 @@
 // VICE HARBOR — boot and the one game loop. Builds the shared state G,
 // wires world → player → vehicles / traffic / pedestrians / police /
 // missions / audio / hud, runs the third-person camera, and owns the game
-// states: 'menu' | 'playing' | 'busted' | 'mission-complete'.
+// states: 'menu' | 'playing' | 'paused' | 'busted' | 'mission-complete'.
 //
 // ?seed=N fixes the world seed. ?shot=start|drive|chase|end stages that
 // screenshot scene instead of the interactive loop, renders it, and sets
@@ -10,14 +10,21 @@
 // The other builders' systems (vehicles, traffic, pedestrians, police,
 // missions, audio) are loaded with dynamic import() guarded by try/catch,
 // so the game still runs if one of them is missing.
+//
+// v2: Enter/Space starts, resumes, retries and continues (ACTION_CONFIRM
+// is finally wired); C toggles the camera between a behind-car follow
+// camera (the default while driving, with a speed FOV kick) and a free
+// orbit; F punches the nearest pedestrian; keys 1-4 pick a mission from
+// the M menu; the wanted heat lands on the theft, not the briefing; the
+// Harbor Heist spawns its armored truck; traffic yields to pedestrians.
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { createRNG } from './random.js';
+import { createRNG, angleLerp } from './random.js';
 import { createWorld } from './world.js';
 import { Player } from './player.js';
-import { Input, ACTION_PAUSE, ACTION_ENTER_EXIT, ACTION_MISSION_MENU, ACTION_CONFIRM } from './input.js';
+import { Input, ACTION_PAUSE, ACTION_ENTER_EXIT, ACTION_MISSION_MENU, ACTION_CONFIRM, ACTION_CAMERA, ACTION_PUNCH } from './input.js';
 import { HUD } from './hud.js';
-import { applyPixelRatio, resizeToCanvas } from './render.js';
+import { applyPixelRatio, resizeToCanvas, approachFov } from './render.js';
 import { stageShot, SHOT_NAMES } from './shots.js';
 
 const STEP = 1 / 60;
@@ -97,6 +104,11 @@ async function boot() {
     money: save.money, wanted: 0, time: 0, state: 'menu',
     playerVehicle: null,
     cameraYaw: 0, cameraPitch: 0.32, cameraDist: 10,
+    // v2 camera: 'follow' eases behind the car while driving (drag adds a
+    // decaying offset); 'orbit' is the old free camera. On foot it is
+    // always a free orbit.
+    cameraMode: 'follow', camOffset: 0,
+    heistTruck: null,
   };
 
   // ---- load the other builders' systems (tolerant) ----
@@ -186,15 +198,44 @@ async function boot() {
     }
   }
 
+  // ---- wanted helper (keeps G.wanted in sync with the police system) ----
+  function addWanted(n) {
+    if (G.police && typeof G.police.addWanted === 'function') {
+      G.police.addWanted(n);
+      if (typeof G.police.wanted === 'number') G.wanted = G.police.wanted;
+    } else {
+      G.wanted = Math.max(0, Math.min(CONFIG.WANTED_MAX, G.wanted + n));
+    }
+  }
+
   // ---- camera ----
   function updateCamera(dt) {
     const drag = input.consumeDrag();
-    G.cameraYaw -= drag.dx * 0.005;
     G.cameraPitch = Math.max(0.08, Math.min(1.1, G.cameraPitch + drag.dy * 0.004));
     const wheel = input.consumeWheel();
     if (wheel !== 0) G.cameraDist = Math.max(5, Math.min(20, G.cameraDist + wheel * 0.01));
 
-    const target = G.playerVehicle && !player.onFoot
+    const driving = !!(G.playerVehicle && !player.onFoot);
+    if (driving && G.cameraMode === 'follow') {
+      // Behind-car follow: ease the yaw toward (heading + PI) so the car
+      // always drives away from the camera after a turn; a mouse drag
+      // adds an offset that decays back to straight behind the car.
+      G.camOffset -= drag.dx * 0.005;
+      G.camOffset *= Math.exp(-dt * 0.9);
+      const desired = G.playerVehicle.heading + Math.PI + G.camOffset;
+      G.cameraYaw = angleLerp(G.cameraYaw, desired, 1 - Math.exp(-dt * 2.4));
+    } else {
+      // Free orbit (on foot, or C toggled to orbit while driving).
+      G.cameraYaw -= drag.dx * 0.005;
+      if (driving) G.camOffset = 0;
+    }
+    // FOV kick with speed: 62 at rest, ~72 flat out.
+    const speed01 = driving
+      ? Math.min(1, Math.abs(G.playerVehicle.speed || 0) / CONFIG.CAR_MAX_SPEED)
+      : 0;
+    approachFov(camera, 62 + speed01 * 10, dt, 3);
+
+    const target = driving
       ? G.playerVehicle.pos
       : player.pos;
     const dist = G.cameraDist;
@@ -228,6 +269,21 @@ async function boot() {
         if (G.audio) G.audio.blip();
         hud.showMessage('Car stolen — drive!');
         announce('In a car. W A S D to drive.');
+        // Theft heat (v2): the crime is the theft, so the wanted level
+        // lands when the player gets into a car during a mission — not
+        // at the briefing, when they may still be on foot with no car.
+        const active = G.missions && G.missions.active;
+        if (active && !active.heatApplied) {
+          if (active.id === 'getaway') {
+            active.heatApplied = true;
+            addWanted(1);
+            hud.showMessage('Car stolen — the heat is on!');
+          } else if (active.id === 'heist' && v.armored) {
+            active.heatApplied = true;
+            addWanted(2);
+            hud.showMessage('Armored truck stolen — 2 stars on you!');
+          }
+        }
       } else {
         hud.showMessage('No car nearby — find one on the road');
       }
@@ -240,6 +296,28 @@ async function boot() {
     }
   }
 
+  // ---- on-foot punch (F) ----
+  function doPunch() {
+    if (!player.onFoot) return;
+    if (typeof player.punch !== 'function' || !player.punch()) return;
+    let best = null;
+    let bestD = 2.2;
+    if (G.pedestrians && G.pedestrians.people) {
+      for (const p of G.pedestrians.people) {
+        if (p.state === 'down') continue;
+        const d = Math.hypot(p.pos.x - player.pos.x, p.pos.z - player.pos.z);
+        if (d < bestD) { bestD = d; best = p; }
+      }
+    }
+    if (G.audio) { try { G.audio.thud(); } catch (e) { /* ignore */ } }
+    if (best && G.pedestrians && typeof G.pedestrians.shove === 'function') {
+      G.pedestrians.shove(best, player.pos.x, player.pos.z);
+      addWanted(1);
+      hud.showMessage('You shoved a pedestrian — the cops noticed!');
+      announce('You shoved a pedestrian. Wanted level up.');
+    }
+  }
+
   // ---- missions ----
   function startMission(i) {
     if (!G.missions || typeof G.missions.start !== 'function') {
@@ -247,10 +325,29 @@ async function boot() {
       return;
     }
     try {
-      G.missions.start(i, G);
-      const m = G.missions.active;
-      if (m) hud.showMessage((m.title || 'Mission') + ' — ' + (m.objective || m.brief || ''));
-      announce('Mission started.');
+      const started = G.missions.start(i, G);
+      const m = started || null;
+      if (m) {
+        hud.showMessage((m.title || 'Mission') + ' — ' + (m.objective || m.brief || ''));
+        announce('Mission started.');
+        // Harbor Heist: park the armored truck at its spot (or put it
+        // back there if a failed run moved it).
+        if (m.id === 'heist' && vehiclesMod && typeof vehiclesMod.spawnArmoredTruck === 'function') {
+          const spot = G.missions.heistTruckPos || { x: 46, z: -58 };
+          if (!G.heistTruck) {
+            const truck = vehiclesMod.spawnArmoredTruck(THREE, spot.x, spot.z, Math.PI / 2);
+            scene.add(truck.mesh);
+            G.vehicles.push(truck);
+            truck.onCrash = () => {
+              if (G.audio) { try { G.audio.crash(); } catch (e) { /* ignore */ } }
+            };
+            G.heistTruck = truck;
+          } else {
+            G.heistTruck.setPose(spot.x, spot.z, Math.PI / 2);
+            G.heistTruck.speed = 0;
+          }
+        }
+      }
     } catch (err) {
       console.warn('[VICE HARBOR] mission start failed:', err);
     }
@@ -297,15 +394,33 @@ async function boot() {
   // ---- one fixed step ----
   function step(dt) {
     G.time += dt;
+    // One-shot presses are taken once per step, whatever the state is —
+    // so Enter/Space works on every screen, not just in play.
+    const actions = input.takeActions();
     if (G.state === 'menu') {
+      if (actions & ACTION_CONFIRM) { startPlaying(); return; }
       // Lively backdrop: traffic and pedestrians keep moving.
       if (G.traffic) G.traffic.update(dt);
       if (G.pedestrians) G.pedestrians.update(dt);
       return;
     }
+    if (G.state === 'paused') {
+      if (actions & ACTION_CONFIRM) resumeGame();
+      return;
+    }
+    if (G.state === 'busted') {
+      if (actions & ACTION_CONFIRM) restartAfterBusted();
+      return;
+    }
+    if (G.state === 'mission-complete') {
+      if (actions & ACTION_CONFIRM) {
+        hud.hideMissionComplete();
+        G.state = 'playing';
+      }
+      return;
+    }
     if (G.state !== 'playing') return;
 
-    const actions = input.takeActions();
     if (actions & ACTION_PAUSE) {
       hud.showPause();
       G.state = 'paused';
@@ -314,6 +429,19 @@ async function boot() {
     if (actions & ACTION_MISSION_MENU) {
       hud.toggleMissionMenu(G.missions, G.missions && G.missions.active ? G.missions.active.id : null);
     }
+    // Keys 1-4 pick a mission while the M menu is open.
+    const digit = input.takeDigitPick();
+    if (digit && typeof hud.missionMenuOpen === 'function' && hud.missionMenuOpen()) {
+      hud.hideMissionMenu();
+      startMission(digit - 1);
+    }
+    if (actions & ACTION_CAMERA) {
+      G.cameraMode = G.cameraMode === 'follow' ? 'orbit' : 'follow';
+      G.camOffset = 0;
+      hud.showMessage('Camera: ' + (G.cameraMode === 'follow' ? 'follow — behind the car' : 'free orbit'));
+      if (G.audio) { try { G.audio.blip(); } catch (e) { /* ignore */ } }
+    }
+    if (actions & ACTION_PUNCH) doPunch();
     if (actions & ACTION_ENTER_EXIT) enterExitCar();
 
     if (player.onFoot) {
@@ -324,7 +452,7 @@ async function boot() {
       player.heading = G.playerVehicle.heading;
     }
 
-    if (G.traffic) G.traffic.update(dt, G.playerVehicle);
+    if (G.traffic) G.traffic.update(dt, G.playerVehicle, G.pedestrians);
     if (G.pedestrians) G.pedestrians.update(dt, G.playerVehicle);
     if (G.police) {
       G.police.update(dt, player, G.vehicles);
@@ -395,6 +523,9 @@ async function boot() {
     const frameDt = Math.min((now - last) / 1000, MAX_FRAME);
     last = now;
     if (G.state === 'paused') {
+      // Still step once per frame while paused, so Enter/Space (confirm)
+      // can resume — step's paused branch only consumes that action.
+      step(STEP);
       renderer.render(scene, camera);
       return;
     }
@@ -413,6 +544,10 @@ async function boot() {
       camera.lookAt(0, 12, 0);
     } else {
       updateCamera(frameDt);
+    }
+    // The harbour lives: boats bob, the lighthouse beam sweeps.
+    if (world.tick) {
+      try { world.tick(frameDt, G.time); } catch (e) { /* garnish */ }
     }
     hud.update(G);
     renderer.render(scene, camera);

@@ -1,8 +1,9 @@
 // VICE HARBOR — audio.js
 // Pure WebAudio synth, no audio files: a two-oscillator engine hum that
 // follows the car's speed, a two-tone siren while the heat is on, and small
-// blips for crashes, pickups and mission success. Everything no-ops safely
-// before ensure() (first user gesture) and whenever audio is unavailable.
+// blips for crashes, pickups and mission success — plus a low thud for a
+// punch landing. Everything no-ops safely before ensure() (first user
+// gesture) and whenever audio is unavailable.
 
 export class AudioEngine {
   constructor() {
@@ -198,6 +199,25 @@ export class AudioEngine {
         osc.start(start);
         osc.stop(start + 0.35);
       });
+    } catch { /* see above */ }
+  }
+
+  /** Low thump for a punch landing: a fast-decaying sine drop. */
+  thud() {
+    if (!this.ctx) return;
+    try {
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(160, now);
+      osc.frequency.exponentialRampToValueAtTime(55, now + 0.12);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.35, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(now);
+      osc.stop(now + 0.18);
     } catch { /* see above */ }
   }
 
