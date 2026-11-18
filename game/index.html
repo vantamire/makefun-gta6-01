@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VICE HARBOR — Open-World Crime Game (v2)</title>
+<title>VICE HARBOR — Open-World Crime Game (v4)</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1230;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -11,27 +11,52 @@
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
   /* ---- HUD ---- */
+  /* v4: the live HUD sits ABOVE the full-screen overlays (z-index 20 vs
+     the overlays' 10), so money, stars, clock, vitals and the circular
+     minimap stay readable even on the menu screen. Money is top-right,
+     big and green; the minimap is a large circle bottom-left, San
+     Andreas style; the weapon slot (bottom-right, above the speedometer)
+     shows the pistol with its ammo, and flashes yellow while reloading. */
   #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; color: #fff; }
-  #hud-money { position: absolute; top: 14px; left: 16px; font-size: 30px; font-weight: 800;
-    color: #7dff9e; text-shadow: 0 2px 6px rgba(0,0,0,.8); letter-spacing: 1px; }
-  #hud-stars { position: absolute; top: 52px; left: 16px; font-size: 24px; letter-spacing: 3px;
-    color: #ffd23c; text-shadow: 0 0 10px rgba(255,210,60,.6), 0 2px 4px rgba(0,0,0,.8); }
-  #hud-stars.hot { color: #ff4d4d; text-shadow: 0 0 12px rgba(255,77,77,.8), 0 2px 4px rgba(0,0,0,.8); }
-  #hud-minimap { position: absolute; top: 14px; right: 14px; width: 180px; height: 180px;
-    border: 2px solid rgba(255,255,255,.35); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
-  #hud-objective { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-    background: rgba(10,12,24,.78); border: 1px solid rgba(255,210,60,.5); border-radius: 6px;
-    padding: 9px 18px; font-size: 16px; font-weight: 600; white-space: nowrap;
+  #hud-money { position: absolute; top: 12px; right: 16px; z-index: 20; font-size: 42px; font-weight: 900;
+    color: #7dff9e; text-shadow: 0 0 2px #000, 0 2px 0 rgba(0,0,0,.9), 0 2px 8px rgba(0,0,0,.9);
+    letter-spacing: 2px; text-align: right; font-variant-numeric: tabular-nums; }
+  #hud-stars { position: absolute; top: 64px; right: 16px; z-index: 20; font-size: 30px; letter-spacing: 4px;
+    color: #ffd23c; text-shadow: 0 0 12px rgba(255,210,60,.7), 0 2px 4px rgba(0,0,0,.9); text-align: right; }
+  #hud-stars.hot { color: #ff4d4d; text-shadow: 0 0 14px rgba(255,77,77,.9), 0 2px 4px rgba(0,0,0,.9); }
+  #hud-clock { position: absolute; top: 104px; right: 16px; z-index: 20; font-size: 24px; font-weight: 800;
+    color: #fff; text-shadow: 0 2px 0 rgba(0,0,0,.9), 0 2px 6px rgba(0,0,0,.9); text-align: right;
+    font-variant-numeric: tabular-nums; }
+  #hud-vitals { position: absolute; top: 138px; right: 16px; z-index: 20; width: 210px; }
+  .vital-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .vital-row span { font-size: 11px; font-weight: 800; letter-spacing: 1px; color: #e8eaf0;
+    text-shadow: 0 1px 2px rgba(0,0,0,.9); width: 48px; text-align: right; }
+  .vital-bar { flex: 1; height: 10px; background: rgba(0,0,0,.65); border: 1px solid rgba(255,255,255,.45);
+    border-radius: 5px; overflow: hidden; }
+  .vital-fill { height: 100%; width: 100%; }
+  .vital-fill.health { background: linear-gradient(180deg, #8dffab, #2fbf5a); }
+  .vital-fill.health.low { background: linear-gradient(180deg, #ff9a9a, #d21f1f); }
+  .vital-fill.armor { background: linear-gradient(180deg, #bfe3ff, #4d8fd1); }
+  #hud-minimap { position: absolute; bottom: 16px; left: 16px; z-index: 20; width: 240px; height: 240px;
+    border: 3px solid rgba(255,255,255,.9); border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 6px 22px rgba(0,0,0,.65); }
+  #hud-objective { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 20;
+    background: rgba(10,12,24,.82); border: 1px solid rgba(255,210,60,.55); border-radius: 6px;
+    padding: 10px 20px; font-size: 17px; font-weight: 600; white-space: nowrap;
     max-width: 90vw; overflow: hidden; text-overflow: ellipsis; }
-  #hud-speed { position: absolute; bottom: 18px; right: 16px; font-size: 26px; font-weight: 800;
-    color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,.9); }
-  #hud-message { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+  #hud-weapon { position: absolute; bottom: 66px; right: 16px; z-index: 20; font-size: 22px; font-weight: 800;
+    color: #fff; text-shadow: 0 2px 0 rgba(0,0,0,.9), 0 2px 6px rgba(0,0,0,.9); text-align: right; }
+  #hud-weapon.reloading { color: #ffd23c; }
+  #hud-speed { position: absolute; bottom: 18px; right: 16px; z-index: 20; font-size: 36px; font-weight: 900;
+    color: #fff; text-shadow: 0 2px 0 rgba(0,0,0,.9), 0 2px 8px rgba(0,0,0,.9); text-align: right;
+    font-variant-numeric: tabular-nums; }
+  #hud-message { position: absolute; top: 22%; left: 50%; transform: translateX(-50%); z-index: 20;
     font-size: 26px; font-weight: 700; text-align: center; color: #fff;
     text-shadow: 0 0 14px rgba(255,120,60,.9), 0 2px 6px rgba(0,0,0,.9);
     transition: opacity .4s; opacity: 0; max-width: 80vw; }
 
   /* ---- Mission menu ---- */
-  #hud-mission-menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  #hud-mission-menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 40;
     width: 460px; max-width: 92vw; background: rgba(12,14,28,.94); border: 1px solid rgba(255,210,60,.6);
     border-radius: 10px; padding: 18px 20px; pointer-events: auto; box-shadow: 0 10px 40px rgba(0,0,0,.7); }
   #hud-mission-menu h2 { margin: 0 0 12px; color: #ffd23c; letter-spacing: 2px; font-size: 22px; }
@@ -44,11 +69,14 @@
   .mission-row em { display: block; font-style: normal; color: #b9bec9; font-size: 13px; margin-top: 3px; }
 
   /* ---- Full-screen overlays ---- */
-  .hud-overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+  .hud-overlay { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center;
-    /* v2: lighter, so the sunset skyline behind the menu shows through
-       instead of a murky dark wash. */
-    background: linear-gradient(180deg, rgba(28,16,52,.68), rgba(46,22,70,.76));
+    /* A light wash, transparent in the middle — the 3D city, the
+       character and the cars stay visible around the panel instead of
+       drowning behind a dark full-screen veil. The text keeps its own
+       shadows, so it stays readable. */
+    background: linear-gradient(180deg, rgba(20,12,40,.55), rgba(20,12,40,.16) 32%,
+      rgba(20,12,40,.16) 68%, rgba(20,12,40,.55));
     pointer-events: auto; }
   .hud-overlay h1 { margin: 0; font-size: 64px; font-weight: 900; letter-spacing: 6px;
     background: linear-gradient(180deg, #ffd23c, #ff4fd8 70%, #ff6b3c);
@@ -65,6 +93,10 @@
   .hud-overlay button:hover { filter: brightness(1.1); }
   .hud-overlay .hint { margin-top: 16px; font-size: 13px; color: #9aa0b0; }
   #hud-busted h1 { background: linear-gradient(180deg, #ff6b6b, #c81e1e); -webkit-background-clip: text; background-clip: text; }
+  /* Photo mode hint: the only chrome left when V hides the HUD. */
+  #hud-photo-hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 20;
+    font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #e8eaf0; background: rgba(10,10,24,.55);
+    border: 1px solid rgba(255,255,255,.25); border-radius: 6px; padding: 6px 12px; display: none; }
 </style>
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.min.js" } }

@@ -2,6 +2,9 @@
 // locally without a build step: `node serve.ts` serves game/ on http://localhost:8080.
 // It sends the MIME types a browser game needs, refuses any path outside game/, and otherwise
 // does nothing clever: this is a development convenience, not a web server for the internet.
+// v4: the same server, written out again for the v4 entry — the game it serves now has the
+// boardwalk district, the pistol, the day/night cycle and the helicopter, but the server
+// itself does not care what the game contains.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -39,7 +42,7 @@ const MIME: Record<string, string> = {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost');
-  // v2: a tiny health endpoint so a play-test script can tell the server
+  // A tiny health endpoint so a play-test script can tell the server
   // is up without fetching the game page.
   if (url.pathname === '/health') {
     response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end('ok');

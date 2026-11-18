@@ -8,10 +8,17 @@
 // pointed at the new game. Screenshots are real renders of the game taken
 // in desktop Chrome (see shots.json for the staged scenes).
 //
-// v2: four missions (Getaway Driver, Taxi Rush, Package Run, Harbor Heist),
-// a behind-car follow camera with a speed FOV kick, on-foot combat (F),
-// boats and a lighthouse on the water, and a dusk sky with the sun east
-// over the harbor.
+// v4: a fresh implementation of the same game, plus a harbor boardwalk
+// district (food stalls, a ferris wheel, an arcade, a marina), two new
+// vehicle kinds (motorcycle with a rider, pickup with an open bed), a
+// pistol (Q draw, F fire, R reload, 12-round magazine), a full day/night
+// cycle, a police helicopter at 3+ stars, three new missions (Pizza
+// Delivery, Street Race vs a rival AI car, Vigilante — ram two fleeing
+// cars), graffiti tags on the shopfront walls, a sport car with a rear
+// spoiler, and fireball explosions on hard crashes. Seven missions in
+// all, a bigger crowd and denser traffic, and the same GTA-style HUD — a
+// large circular rotating minimap bottom-left, big "$00000000" money
+// top-right with wanted stars, an in-game clock and health + armor bars.
 //
 // Run it outside the grader with MAKEFUN_OUTPUT_DIR standing in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts

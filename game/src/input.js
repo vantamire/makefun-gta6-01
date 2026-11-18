@@ -1,82 +1,105 @@
-// Keyboard + mouse input state, consumed by main.js and player.js.
-// Tracks a live set of pressed codes, mouse-drag deltas for the orbit
-// camera, and the mouse wheel for zoom. One-shot presses (pause, enter
-// car, mission menu, camera, punch) are queued as bit flags and taken once
-// by the loop, so a press between two frames is never lost and never
-// counted twice. Number keys 1-4 are queued separately as a mission pick,
-// so the M menu can be driven from the keyboard alone.
-// v2: ACTION_PUNCH (F) for on-foot combat, digit picks for the mission menu.
+// v4 — keyboard + mouse input, consumed by main.js and player.js.
+// The loop reads a live set of held codes (movement, handbrake) and
+// takes one-shot presses (pause, enter car, mission menu, camera,
+// punch, weapon switch, reload) as bit flags, so a press landing
+// between two frames is never lost and never counted twice. Number keys
+// 1-7 queue a mission pick, so the M menu works from the keyboard alone.
 
+// One-shot actions, as bits the main loop takes once per frame.
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
 export const ACTION_ENTER_EXIT = 4;
 export const ACTION_MISSION_MENU = 8;
 export const ACTION_CAMERA = 16;
 export const ACTION_PUNCH = 32;
+export const ACTION_WEAPON = 64;
+export const ACTION_RELOAD = 128;
+export const ACTION_PHOTO = 256;
 
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-const ENTER_EXIT = new Set(['KeyE']);
-const MISSION_MENU = new Set(['KeyM']);
-const CAMERA = new Set(['KeyC']);
-const PUNCH = new Set(['KeyF']);
-const DIGITS = new Set(['Digit1', 'Digit2', 'Digit3', 'Digit4']);
+// Every key that fires a one-shot action, as code → flag. Space doubles
+// as the confirm key and the handbrake: confirm is queued on keydown
+// while the handbrake is read from the live key set, so one press does
+// both jobs without conflict.
+const BINDINGS = new Map([
+  ['Space', ACTION_CONFIRM],
+  ['Enter', ACTION_CONFIRM],
+  ['KeyP', ACTION_PAUSE],
+  ['Escape', ACTION_PAUSE],
+  ['KeyE', ACTION_ENTER_EXIT],
+  ['KeyM', ACTION_MISSION_MENU],
+  ['KeyC', ACTION_CAMERA],
+  ['KeyF', ACTION_PUNCH],
+  ['KeyQ', ACTION_WEAPON],
+  ['KeyR', ACTION_RELOAD],
+  ['KeyV', ACTION_PHOTO],
+]);
+
+// Mission picks: Digit1-7 map to jobs 1-7.
+const DIGIT_CODES = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7'];
+
+// Movement keys: each entry contributes its x/y to the move vector.
+const MOVE_KEYS = [
+  { codes: ['KeyW', 'ArrowUp'], x: 0, y: 1 },
+  { codes: ['KeyS', 'ArrowDown'], x: 0, y: -1 },
+  { codes: ['KeyD', 'ArrowRight'], x: 1, y: 0 },
+  { codes: ['KeyA', 'ArrowLeft'], x: -1, y: 0 },
+];
 
 export class Input {
   constructor(canvas) {
     this.canvas = canvas || null;
+    // Live set of held key codes.
     this.keys = new Set();
+    // Queued one-shot flags, taken once by the loop.
     this.actions = 0;
-    // Queued mission pick: 1-4 from the Digit keys, 0 = none. Taken once.
+    // Queued mission pick (1-7 from the Digit keys, 0 = none).
     this.digitPick = 0;
     this.mouseDown = false;
     this.dragDX = 0;
     this.dragDY = 0;
     this.wheelDelta = 0;
-    this._onKeyDown = (e) => {
+    // Every listener this instance adds, so dispose() removes exactly
+    // what the constructor registered — no stale handlers after a retry.
+    this._listeners = [];
+    const on = (target, type, fn, opts) => {
+      target.addEventListener(type, fn, opts);
+      this._listeners.push([target, type, fn, opts]);
+    };
+    on(window, 'keydown', (e) => {
       if (e.code === 'Space') e.preventDefault();
-      if (!e.repeat) {
-        if (CONFIRM.has(e.code)) this.actions |= ACTION_CONFIRM;
-        else if (PAUSE.has(e.code)) this.actions |= ACTION_PAUSE;
-        else if (ENTER_EXIT.has(e.code)) this.actions |= ACTION_ENTER_EXIT;
-        else if (MISSION_MENU.has(e.code)) this.actions |= ACTION_MISSION_MENU;
-        else if (CAMERA.has(e.code)) this.actions |= ACTION_CAMERA;
-        else if (PUNCH.has(e.code)) this.actions |= ACTION_PUNCH;
-        else if (DIGITS.has(e.code)) this.digitPick = Number(e.code.slice(5));
+      if (e.repeat) return;
+      const flag = BINDINGS.get(e.code);
+      if (flag !== undefined) {
+        this.actions |= flag;
+      } else {
+        const digit = DIGIT_CODES.indexOf(e.code);
+        if (digit >= 0) this.digitPick = digit + 1;
       }
       this.keys.add(e.code);
-    };
-    this._onKeyUp = (e) => {
+    });
+    on(window, 'keyup', (e) => {
       this.keys.delete(e.code);
-    };
-    this._onBlur = () => {
+    });
+    on(window, 'blur', () => {
       this.keys.clear();
       this.mouseDown = false;
-    };
-    this._onMouseDown = () => {
-      this.mouseDown = true;
-    };
-    this._onMouseUp = () => {
-      this.mouseDown = false;
-    };
-    this._onMouseMove = (e) => {
-      if (this.mouseDown) {
+    });
+    if (canvas) {
+      on(canvas, 'mousedown', () => {
+        this.mouseDown = true;
+      });
+      on(window, 'mouseup', () => {
+        this.mouseDown = false;
+      });
+      on(window, 'mousemove', (e) => {
+        if (!this.mouseDown) return;
         this.dragDX += e.movementX || 0;
         this.dragDY += e.movementY || 0;
-      }
-    };
-    this._onWheel = (e) => {
-      e.preventDefault();
-      this.wheelDelta += e.deltaY;
-    };
-    window.addEventListener('keydown', this._onKeyDown);
-    window.addEventListener('keyup', this._onKeyUp);
-    window.addEventListener('blur', this._onBlur);
-    if (canvas) {
-      canvas.addEventListener('mousedown', this._onMouseDown);
-      window.addEventListener('mouseup', this._onMouseUp);
-      window.addEventListener('mousemove', this._onMouseMove);
-      canvas.addEventListener('wheel', this._onWheel, { passive: false });
+      });
+      on(canvas, 'wheel', (e) => {
+        e.preventDefault();
+        this.wheelDelta += e.deltaY;
+      }, { passive: false });
     }
   }
 
@@ -84,61 +107,58 @@ export class Input {
     return this.keys.has(code);
   }
 
-  // True while any of the given codes is held.
+  /** True while any of the given codes is held. */
   anyDown(...codes) {
-    for (const c of codes) if (this.keys.has(c)) return true;
-    return false;
+    return codes.some((c) => this.keys.has(c));
   }
 
-  // WASD / arrow movement as { x: -1..1 (strafe), y: -1..1 (forward) }.
+  /** WASD / arrow movement as { x: -1..1 (strafe), y: -1..1 (forward) }. */
   moveVector() {
-    const f = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0)
-      - (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0);
-    const s = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0)
-      - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
-    return { x: s, y: f };
+    let x = 0;
+    let y = 0;
+    for (const entry of MOVE_KEYS) {
+      if (entry.codes.some((c) => this.keys.has(c))) {
+        x += entry.x;
+        y += entry.y;
+      }
+    }
+    return { x, y };
   }
 
-  // One-shot presses since the last call, as ACTION_* flags.
+  /** One-shot presses since the last call, as ACTION_* flags. */
   takeActions() {
     const taken = this.actions;
     this.actions = 0;
     return taken;
   }
 
-  // Queued Digit1-4 press since the last call (1-4, or 0 when none).
+  /** Queued Digit1-7 press since the last call (1-7, or 0 when none). */
   takeDigitPick() {
     const pick = this.digitPick;
     this.digitPick = 0;
     return pick;
   }
 
-  // Consume the accumulated mouse-drag delta since the last call.
+  /** The mouse-drag delta accumulated since the last call. */
   consumeDrag() {
-    const dx = this.dragDX;
-    const dy = this.dragDY;
+    const out = { dx: this.dragDX, dy: this.dragDY };
     this.dragDX = 0;
     this.dragDY = 0;
-    return { dx, dy };
+    return out;
   }
 
-  // Consume the accumulated wheel delta since the last call.
+  /** The wheel delta accumulated since the last call. */
   consumeWheel() {
-    const d = this.wheelDelta;
+    const out = this.wheelDelta;
     this.wheelDelta = 0;
-    return d;
+    return out;
   }
 
   dispose() {
-    window.removeEventListener('keydown', this._onKeyDown);
-    window.removeEventListener('keyup', this._onKeyUp);
-    window.removeEventListener('blur', this._onBlur);
-    window.removeEventListener('mouseup', this._onMouseUp);
-    window.removeEventListener('mousemove', this._onMouseMove);
-    if (this.canvas) {
-      this.canvas.removeEventListener('mousedown', this._onMouseDown);
-      this.canvas.removeEventListener('wheel', this._onWheel);
+    for (const [target, type, fn, opts] of this._listeners) {
+      target.removeEventListener(type, fn, opts);
     }
+    this._listeners.length = 0;
   }
 }
 
