@@ -1,1 +1,1 @@
-[{"name":"1-start.jpg","query":"?shot=start&seed=1"},{"name":"2-drive.jpg","query":"?shot=drive&seed=1"},{"name":"3-chase.jpg","query":"?shot=chase&seed=1"},{"name":"4-end.jpg","query":"?shot=end&seed=1"}]
+{"shots":[{"file":"1-start.jpg","label":"Rex on foot beside his red coupe at dusk","name":"start"},{"file":"2-drive.jpg","label":"Driving the coupe down the main avenue","name":"drive"},{"file":"3-chase.jpg","label":"Three-star chase with helicopter and fireball","name":"chase"},{"file":"4-end.jpg","label":"Night at the safehouse after the Casino Caper","name":"end"}]}
